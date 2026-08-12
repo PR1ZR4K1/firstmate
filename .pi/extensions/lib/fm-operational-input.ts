@@ -30,7 +30,7 @@ function runOperationalInputCommand(
     maxBuffer: 1024 * 1024,
   });
   if (result.status !== 0) return undefined;
-  return command === "classify" ? result.stdout.replace(/\n$/, "") : result.stdout;
+  return result.stdout.replace(/\n$/, "");
 }
 
 export function encodeFirstmateOperationalInput(
