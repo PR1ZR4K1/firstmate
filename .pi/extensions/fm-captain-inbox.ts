@@ -5,6 +5,7 @@ import {
   captureCaptainResponse,
   resolveCaptainInboxPaths,
 } from "./lib/fm-captain-inbox-store.mjs";
+import { classifyFirstmateCurrentOperationalText } from "./lib/fm-operational-input.ts";
 
 // Captain's Inbox capture is intentionally an in-process Pi-only integration.
 // message_end supplies a finalized visible assistant message, while agent_settled
@@ -64,11 +65,24 @@ function sessionId(ctx: unknown): string | undefined {
 
 export default function (pi: ExtensionAPI) {
   let candidate: Candidate | undefined;
+  let watcherFollowUpAfterCandidate = false;
+
+  pi.on("input", (event) => {
+    const text = (event as { text?: unknown }).text;
+    if (
+      candidate &&
+      typeof text === "string" &&
+      classifyFirstmateCurrentOperationalText(text) === "watcher"
+    ) {
+      watcherFollowUpAfterCandidate = true;
+    }
+  });
 
   pi.on("message_end", (event, ctx) => {
     const message = (event as { message?: AssistantMessage }).message;
     if (!message || message.role !== "assistant") return;
     candidate = undefined;
+    watcherFollowUpAfterCandidate = false;
     const body = finalizedText(message);
     const timestamp = completedAt(message);
     const currentSessionId = sessionId(ctx);
@@ -79,11 +93,17 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, ctx) => {
     const settled = ctx as { isIdle?: () => boolean; mode?: unknown };
     const completed = candidate;
+    const allowNonIdleWatcherFollowUp = watcherFollowUpAfterCandidate;
     candidate = undefined;
+    watcherFollowUpAfterCandidate = false;
     if (
       !completed ||
       settled.mode !== "tui" ||
-      (typeof settled.isIdle === "function" && !settled.isIdle())
+      (
+        typeof settled.isIdle === "function" &&
+        !settled.isIdle() &&
+        !allowNonIdleWatcherFollowUp
+      )
     ) {
       return;
     }

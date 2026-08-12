@@ -154,6 +154,43 @@ assert.equal(inbox.messages[0].read, false, "new message was not unread");
 assert.match(inbox.messages[0].id, /^ci_v1_[a-f0-9]{32}$/, "message ID was not stable contract syntax");
 const firstId = inbox.messages[0].id;
 
+const watcherRace = await makeHome("watcher-race");
+const watcherRaceRuntime = await loadExtension(watcherRace);
+const watcherRaceBody = "## Captain’s Call\nA watcher follow-up must not drop this completed response.";
+const watcherInput = execFileSync(operationalInput, ["encode", "watcher"], {
+  encoding: "utf8",
+  input: "watcher notification after the completed response",
+}).trimEnd();
+const watcherRaceMessage = assistant([{ type: "thinking", thinking: "private" }, { type: "text", text: watcherRaceBody }], firstTimestamp + 1);
+watcherRaceRuntime.ctx.isIdle = () => false;
+emit(watcherRaceRuntime, "message_end", { message: watcherRaceMessage });
+emit(watcherRaceRuntime, "input", { source: "extension", text: watcherInput });
+emit(watcherRaceRuntime, "agent_settled", {});
+await eventually(
+  async () => (await list(watcherRace)).messages.length === 1,
+  "a typed watcher follow-up dropped the completed Captain’s Call response",
+);
+assert.equal((await list(watcherRace)).messages[0].body, watcherRaceBody, "watcher-race capture changed the plain response body");
+assert.equal((await list(watcherRace)).messages[0].read, false, "watcher-race capture was not unread");
+
+const staleWatcher = await makeHome("stale-watcher");
+const staleWatcherRuntime = await loadExtension(staleWatcher);
+staleWatcherRuntime.ctx.isIdle = () => false;
+emit(staleWatcherRuntime, "input", { source: "extension", text: watcherInput });
+emit(staleWatcherRuntime, "message_end", { message: watcherRaceMessage });
+emit(staleWatcherRuntime, "agent_settled", {});
+await delay(50);
+assert.equal((await list(staleWatcher)).messages.length, 0, "a stale watcher input captured a later non-idle response");
+
+const unrelatedContinuation = await makeHome("unrelated-continuation");
+const unrelatedRuntime = await loadExtension(unrelatedContinuation);
+unrelatedRuntime.ctx.isIdle = () => false;
+emit(unrelatedRuntime, "message_end", { message: watcherRaceMessage });
+emit(unrelatedRuntime, "input", { source: "extension", text: "ordinary continuation" });
+emit(unrelatedRuntime, "agent_settled", {});
+await delay(50);
+assert.equal((await list(unrelatedContinuation)).messages.length, 0, "an unrelated non-idle continuation captured a response");
+
 await deliver(runtime, { message: first });
 await delay(50);
 assert.equal((await list(home)).messages.length, 1, "duplicate completed event created another message");
