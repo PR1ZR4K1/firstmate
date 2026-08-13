@@ -1,6 +1,7 @@
 # Decision hold lifecycle mechanism
 
 The normative policy is owned by `.agents/skills/decision-hold-lifecycle/SKILL.md` and is not restated here.
+The captain-facing Lavish procedure is owned separately by `.agents/skills/lavish-review/SKILL.md`, which routes every explicit scoped answer back through this lifecycle.
 This document records the deterministic mechanism, structured surfaces, and privacy-safe regression evidence.
 
 ## Mechanism
@@ -57,7 +58,7 @@ ok - report-only unresolved decision is reproduced and completion refuses before
 ok - non-forced scout teardown always requires durable inventory verification
 ok - captain holds are idempotent, distinct, teardown-safe, Bearings-visible, and durably routed before close
 ok - completion and verification validate origins before constructing paths
-ok - ended visual review follows the same decision-hold completion owner
+ok - ended visual review and its submitted answer use the same durable decision lifecycle
 ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
 ok - main-home and secondmate-home captain holds remain correctly routed

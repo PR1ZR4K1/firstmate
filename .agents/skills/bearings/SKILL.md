@@ -3,7 +3,7 @@ name: bearings
 description: >-
   Generate a "pick up where I left off" fleet digest from firstmate's live fleet state.
   Use when the captain invokes /bearings or asks for a bearings report, morning brief, status report, catch-up, "where did I leave off", or "what's in the works".
-  Plain /bearings is chat-only by default, while /bearings file explicitly writes the dated data/status-report-<YYYY-MM-DD>.md artifact; live PR enrichment remains opt-in and composes with file mode.
+  Plain /bearings is chat-only by default, /bearings file explicitly writes the dated data/status-report-<YYYY-MM-DD>.md artifact, and /bearings visual opens a private local Lavish review; live PR enrichment remains opt-in and composes with both modes.
 user-invocable: true
 metadata:
   internal: true
@@ -13,19 +13,24 @@ metadata:
 
 Generate a complete current snapshot from the fleet's current state, so the captain can resume in one read after a break, a night, or a context reset.
 Plain `/bearings` returns only the concise four-section chat digest.
-Only `/bearings file` writes the dated markdown report artifact and then returns the concise four-section chat digest linked to that report.
-This skill is operationally read-only in both modes.
-It never tears down a task, merges a PR, dispatches new work, steers a worker, answers a decision, cleans up work, mutates backlog or task state, or writes any file except the single dated report in explicit file mode.
+Only `/bearings file` writes the dated markdown report artifact.
+`/bearings visual`, or a Bearings request that explicitly asks for a rich or visual report, adds a private local Lavish review after the same concise digest is ready.
+The ordinary and file modes remain operationally read-only apart from the one dated file, while visual mode may create only its gitignored `.lavish/` artifact and the established Lavish session and callback state.
+This skill never tears down a task, merges a PR, dispatches new work, steers a worker, answers a decision, cleans up work, or mutates backlog or task state.
 
 ## Invocation modes
 
 - Plain `/bearings` gathers a fresh bounded snapshot and renders the four-section chat digest without creating, deleting, reading, or replacing `data/status-report-<YYYY-MM-DD>.md`.
 - `/bearings file` gathers a fresh bounded snapshot, replaces today's `data/status-report-<YYYY-MM-DD>.md` from scratch, and renders the four-section chat digest with a link or path to that report.
+- `/bearings visual` gathers the same snapshot, renders the four-section chat digest, then creates and opens a private local Lavish review under the active home's `.lavish/` root.
+- `/bearings file visual` writes the dated report and creates the private local review from the same fresh snapshot.
 - Treat `file` only as an explicit invocation option in the slash command.
 - Do not treat natural-language requests such as "write a report", "save this", "persist it", or "make a file" as file mode unless the invocation explicitly includes the standalone `file` option.
+- Treat `visual` as explicit when it appears as an invocation option or when a natural-language Bearings request clearly asks for a rich, interactive, or visual report.
 - When the captain asks to include PRs, pass the snapshot command's live-PR opt-in.
 - `/bearings include PRs` remains chat-only and makes the live-PR opt-in.
-- `/bearings file include PRs` writes the dated report and makes the live-PR opt-in.
+- `/bearings visual include PRs` adds the private review and makes the live-PR opt-in.
+- `/bearings file visual include PRs` combines the dated report, private review, and live PR enrichment.
 
 ## What it does
 
@@ -62,7 +67,13 @@ It never tears down a task, merges a PR, dispatches new work, steers a worker, a
    - **Underway** - each live direct report making progress, with its current state, and the plans or main pickup pointers worth reopening (`data/<id>/report.md` files, `.lavish/*.html` boards).
    - **Charted Next** - queued or gated work, including any main-inventory integrity warning, with each item's blocker, date, or integrity reason.
    After writing the file, return the concise four-section chat digest and include the report path or link without adding a fifth section.
-   For a richer review surface, optionally offer a Lavish board with `lavish-axi` when the report has enough structure to deserve one, but only after the required digest is ready.
+
+4. **In explicit visual mode only, create the private local review.**
+   Load `lavish-review` and follow its complete local-artifact, playbook, design, privacy, callback, feedback, and decision-reconciliation procedure.
+   Build the review from the same fresh snapshot and optional dated report rather than reading raw status history or inventing another fleet-state source.
+   Use structured input for open Captain's Call decisions, while preserving the established authority and `decision-hold-lifecycle` owners.
+   Include the local review path inside the relevant one of the four chat sections without adding a fifth section.
+   The concise four-section chat digest and structured fleet state remain accessible durable summaries, so the HTML never becomes the only record.
 
 ## Chat-response contract
 
@@ -92,6 +103,7 @@ Rules that keep the contract unambiguous:
 - The chat follows `AGENTS.md` section 9 and carries one scannable line per item.
 - Detailed decisions, plans, full gate reasons, and evidence belong in the file only when file mode is explicit, so plain chat stays concise and file-mode chat stays materially shorter than that file.
 - In file mode, include the report path or link inside the four-section digest without adding another heading.
+- In visual mode, include the local review path inside the four-section digest without adding another heading.
 
 ## Tone and content rules
 
@@ -102,6 +114,6 @@ Rules that keep the contract unambiguous:
 
 ## Supervision discipline
 
-This skill changes no fleet state.
-Do not tear down a task, merge a PR, dispatch queued work, steer a worker, answer a queued decision, clean up work, or mutate any `state/` or `data/` file other than the single report file in explicit file mode.
+This skill changes no fleet work state.
+Do not tear down a task, merge a PR, dispatch queued work, steer a worker, answer a queued decision, clean up work, or mutate any `state/` or `data/` file other than the single report file in explicit file mode and the established Lavish callback records in visual mode.
 If the state you read suggests an action - a PR ready to merge, a queued item whose gate has arrived, or a needs-decision finding - name it in its section and leave the action to the normal lifecycle and configured authority rather than taking it from inside this skill.

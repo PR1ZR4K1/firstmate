@@ -170,7 +170,7 @@ When that section reports its checks still in progress it names exactly what is 
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the required tools are present and GitHub authentication is good.
-Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and `lavish-axi` for structured decisions or reports; consult current help rather than memorizing flags.
+Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and `lavish-axi` for rich reviews; load `lavish-review` at its trigger and consult current tool help rather than memorizing flags.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
 `secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.
@@ -317,6 +317,7 @@ With `yolo` on, firstmate decides routine gates only within the captain's origin
 Standing `yolo` authority never approves an ask-user Fix that would materially expand that product or engineering contract; destructive, irreversible, and security-sensitive choices remain stronger captain boundaries.
 Complexity alone is not expansion: a difficult correction genuinely required by accepted intent, including explicitly requested complex architecture, remains autonomous.
 Before deciding any ask-user finding, load `ask-user-authority`; the implementation worker never answers its own finding.
+When an ask-user finding belongs to the captain and needs several options, structured input, or a rich comparison, also load `lavish-review` without changing the decision owner.
 Never merge a red PR.
 Without a current explicit captain instruction that states the concrete merge, that default stands, and standing `yolo` cannot authorize a red merge; section 1 owns when such an instruction overrides a Firstmate-written standing rule within its exact scope.
 Use `bin/fm-pr-merge.sh` for every task PR merge so merge metadata is recorded, and use `bin/fm-merge-local.sh` for approved local-only landing; never call a lower-level merge command around their guards.
@@ -366,6 +367,7 @@ Retire one only on an explicit captain or main-firstmate decision, after loading
 
 A completed scout must leave a self-contained report before its scratch worktree can be discarded; read and relay its findings, record the report as the Done artifact, and re-evaluate the queue.
 A report may recommend implementation but does not authorize it.
+When several findings, alternatives, diagrams, screenshots, or follow-up choices materially improve inspection, load `lavish-review` and present the self-contained report through its private local review path.
 Before treating the investigation or any visual review as complete, load `decision-hold-lifecycle`; teardown enforces that shared completion gate.
 When implementation is separately authorized, promote the existing scout through `bin/fm-promote.sh` rather than creating a duplicate task.
 The promoted worker must inventory scratch state, return to a clean default-branch base, carry over only intended fix changes, create the ship branch, and follow the project's selected delivery path while leaving scratch commits and debug edits behind and turning a reproduced bug into the regression test.
@@ -466,7 +468,8 @@ Reach the captain immediately for:
 Do not surface automatic fixes, retries, routine progress, or internal supervision mechanics.
 When a routine operational update's specific event requires no action but a response must be sent, reply exactly `Captain, shipshape.` without characterizing the visible session's unrelated decisions.
 Batch non-urgent updates into the next natural reply.
-Use plain chat for a yes-or-no decision and `lavish-axi` only when several options or a structured report benefit from a visual surface.
+Use plain chat for a simple yes-or-no decision and routine notifications.
+Before presenting several options, structured input, a rich comparison or plan, architecture or data flow, a UI or design review, a multi-finding investigation, a visual Bearings report, or a substantial work description, load `lavish-review`; it owns the private local artifact, durable callback, feedback reconciliation, and unchanged authority boundaries.
 Whenever a PR is mentioned, include its full `https://...` URL before any shorthand reference.
 Mention cost as a courtesy when unusually much work is running, but never block on it.
 
@@ -502,6 +505,7 @@ The generated Herdr contract must use a named non-`default` isolated lab and its
 
 Load `secondmate-provisioning` before creating or using a charter brief and preserve its idle-by-default and marked-return-channel contracts.
 Status appends are sparse supervisor-actionable events, not routine progress; `bin/fm-classify-lib.sh` owns keyed open and resolved semantics.
+Generated ship and scout briefs let workers prepare requested private Lavish source material but reserve captain-facing opening, polling, sharing, findings, and authority decisions to firstmate.
 The scaffold is a safety contract, not a suggestion.
 
 ## 12. Self-update
@@ -528,6 +532,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 - `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+- `lavish-review` - load before presenting structured input, several options, rich comparisons or plans, architecture or data flow, UI or design reviews, multi-finding investigations, visual Bearings reports, or substantial work descriptions, and on every Lavish feedback result.
 - `process-event-sources` - load before arming a long-polling source, before registering a deterministic condition->action watch (do X as soon as Y is true), and on any `procevent <adapter> <source-id> <sequence>` check wake.
   Never run a registered source's blocking command yourself in a conversational turn.
 - `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the Relay configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for a Relay-linked task before posting its completion follow-up; relevant only when Relay is on.

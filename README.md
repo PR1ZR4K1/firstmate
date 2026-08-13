@@ -42,6 +42,7 @@ Launching a supported harness inside it instantiates your first mate - and makes
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.
+- **Rich private reviews** - complex decisions, structured input, plans, architecture, UI evidence, investigation findings, and substantial work descriptions can open as local Lavish review surfaces while simple questions and routine updates stay in chat.
 - **A visible crew** - every crewmate works in its own tmux window, experimental herdr/zellij tab, cmux workspace, or Orca terminal you can watch or type into; the first mate reconciles.
 - **Disposable worktrees** - each task runs in a clean [treehouse](https://github.com/kunchenguid/treehouse) git worktree, or an Orca-managed worktree when `backend=orca`, so parallel work on one repo never collides.
 - **Two task shapes** - ship tasks deliver authorized changes; scout tasks leave standalone investigation reports when the intake contract warrants separate research.
@@ -172,7 +173,7 @@ Claude and grok use the slash form shown here; codex uses the same names with `$
 | `/afk`             | Enter away-mode supervision: the sub-supervisor self-handles routine notifications in bash, escalates captain-relevant events and bounded declared-external-wait rechecks as batched digests, and actively alerts if delivery gets stuck while you step away |
 | `/keep-awake`      | On macOS, start, check, or stop an explicit idle-system-sleep assertion that preserves display sleep; `/afk keep-awake` stops its assertion when you return |
 | `/ahoy`            | Recap visible session events since the prior real captain message plus visibly unanswered captain decisions, then guide the captain through any open decisions one at a time in agent-judged impact order; fall back to Bearings when invoked as the session's first real captain message |
-| `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state; use `/bearings file` to also replace today's dated report in `data/`, and add `include PRs` when live PR enrichment is wanted |
+| `/bearings`        | Generate a concise four-section chat digest from bounded local fleet and registered-secondmate state; add `file` for today's dated report, `visual` for a private local Lavish review, and `include PRs` for live PR enrichment |
 | `/updatefirstmate` | Self-update the running firstmate and its secondmates to the latest from origin with fast-forward-only pulls, then re-read instructions and nudge secondmates |
 | `/stow`            | Sweep the session for uncaptured durable knowledge, curate tiered startup memory with decay and cold archival, enforce each home's budget or surface the required decision, cascade to registered second mates, and report what is safe to reset |
 
@@ -181,7 +182,8 @@ Bearings invocation examples:
 - `/bearings` returns the fresh four-section digest in chat only.
 - `/bearings include PRs` keeps chat-only mode and opts into live PR enrichment.
 - `/bearings file` replaces today's `data/status-report-<YYYY-MM-DD>.md` from scratch and links it from the four-section chat digest.
-- `/bearings file include PRs` combines the dated report with live PR enrichment.
+- `/bearings visual` keeps the concise digest and opens a private local Lavish review for richer inspection.
+- `/bearings file visual include PRs` composes the dated report, private visual review, and live PR enrichment.
 
 Agent-only reference skills live under `.agents/skills/` and are loaded by firstmate at the trigger points named in [`AGENTS.md`](AGENTS.md).
 
@@ -198,6 +200,7 @@ Firstmate's skills live in two separate places with different audiences:
 ## Documentation
 
 - [docs/architecture.md](docs/architecture.md) - maintainer architecture for the crew, supervision, worktrees, secondmates, and project modes.
+- [docs/lavish-review.md](docs/lavish-review.md) - maintainer architecture for private rich reviews, durable feedback callbacks, decision reconciliation, and worker boundaries.
 - [docs/configuration.md](docs/configuration.md) - environment variables, `FM_HOME`, runtime backend selection, optional Relay and its X and Discord setup steps, macOS keep-awake behavior, the files you set, and harness support.
 - [docs/remote-secondmates.md](docs/remote-secondmates.md) - current setup, routing, transfer, recovery, and safety behavior for whole-home remote second mates.
 - [docs/calm.md](docs/calm.md) - current Pi `/calm` behavior and supported presentation limits.

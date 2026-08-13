@@ -352,7 +352,22 @@ test_visual_review_uses_shared_completion_owner() {
   ' >/dev/null || fail "ended visual review did not leave its durable Captain Call: $json"
   [ ! -e "$home/data/visual-review-decisions.json" ] \
     || fail "visual review created a second decision database"
-  pass "ended visual review follows the same decision-hold completion owner"
+
+  tasks_in "$home" add sample-layout-implementation "Apply the captain's sample layout" \
+    --kind ship --repo sample --blocked-by "$hold" >/dev/null \
+    || fail "visual-review answer could not create its dependent work edge"
+  printf 'Use the compact sample layout selected in the visual review.\n' \
+    > "$home/.lavish/sample-board-decision-layout.txt"
+  run_decisions "$home" resolve "$id" layout \
+    --decision-file "$home/.lavish/sample-board-decision-layout.txt" \
+    --routed-to sample-layout-implementation >/dev/null \
+    || fail "visual-review answer did not route through the shared decision owner"
+  json=$(run_bearings "$home") || fail "Bearings failed after visual-review answer routing"
+  printf '%s' "$json" | jq -e --arg hold "$hold" '
+    (.decisions_open | any(.id == $hold) | not)
+      and (.gates | any(.id == "sample-layout-implementation"))
+  ' >/dev/null || fail "visual-review answer was stranded outside durable decision routing: $json"
+  pass "ended visual review and its submitted answer use the same durable decision lifecycle"
 }
 
 test_none_inventory_and_resolved_prose_do_not_create_holds() {

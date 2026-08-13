@@ -175,6 +175,11 @@ The helper's header owns the exact signal detection, relocated-home limitation, 
 Ship tasks change projects and ship by project mode (`no-mistakes`, `direct-PR`, or `local-only`); scout tasks leave standalone investigation reports at `data/<id>/report.md` and never push.
 The intake and authority contract in `AGENTS.md` owns when separate scout research is warranted.
 
+## Private visual reviews
+
+Firstmate uses Lavish as the preferred private local surface when complex captain decisions, structured input, rich comparisons or plans, architecture, UI evidence, investigation findings, or substantial work descriptions benefit from visual inspection.
+[`lavish-review.md`](lavish-review.md) owns the component boundaries among the review skill, safe local path helper, process-event callback, durable decision lifecycle, worker instructions, and harness or runtime axes.
+
 ## Dispatch profiles
 
 Crewmate and scout dispatch can stay on the static crewmate harness resolved by `config/crew-harness`, or it can use local dispatch profiles in `config/crew-dispatch.json`.

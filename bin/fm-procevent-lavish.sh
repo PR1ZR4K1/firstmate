@@ -2,30 +2,42 @@
 # Lavish adapter for the generic process-to-event runner.
 #
 # Usage:
-#   fm-procevent-lavish.sh arm <artifact.html>
+#   fm-procevent-lavish.sh arm <artifact.html> [--agent-reply <message>]
 #   fm-procevent-lavish.sh classify <result-file>
 #   fm-procevent-lavish.sh terminal <result-file>
 #   fm-procevent-lavish.sh source-id <artifact.html>
 #   fm-procevent-lavish.sh retire <artifact.html>
 #
+# arm        Validate Firstmate's private local artifact shape, then register one
+#            blocking lavish-axi poll through the generic process-event runner.
+#            After handling ordinary feedback and revising the artifact, arm
+#            again with --agent-reply so the browser sees the response before it
+#            accepts more feedback. The message must be one non-empty line of at
+#            most 4096 bytes.
 # classify   Print the lifecycle state a handler should act on: feedback, ended,
 #            waiting, missing, or unknown.
-# terminal   Exit 0 when the captured result means this Lavish source will never
-#            produce another result, so the runner may retire it; any other exit
-#            keeps it armed. This is the generic adapter contract bin/fm-procevent.sh
-#            calls, and the only place Lavish's notion of "ended" is decided.
+# terminal   Exit 0 for every completed feedback, ended, or missing result so the
+#            current poll registration retires before handler work. An ordinary
+#            open-session feedback result is explicitly re-armed by its handler;
+#            this prevents the watcher's next reconciliation from starting a
+#            plain poll before --agent-reply can be sent. Waiting or unknown
+#            results stay armed for recovery.
 #
 # This adapter is deliberately thin. It owns only what is specific to Lavish:
-# canonical source identity, the argv for the currently published poll command,
-# and how to read a completed result. Ownership, durable capture, publication,
-# and restart recovery all belong to bin/fm-procevent.sh.
+# safe local artifact validation, canonical source identity, the argv for the
+# currently published poll command, and how to read a completed result.
+# Ownership, durable capture, publication, and restart recovery all belong to
+# bin/fm-procevent.sh.
 #
-# It wraps ONLY the currently published interface, verified against 0.1.45:
+# It wraps ONLY the currently published interface, verified against 0.1.50:
 #   Usage: lavish-axi poll <html-file> [--agent-reply "..."]
 # and that command "long-polls indefinitely" server-side. The adapter therefore
-# runs the plain blocking form with no timeout flag, so results arrive as real
+# runs the blocking form with no timeout flag, so results arrive as real
 # server-side events. It adds no periodic discovery, no timer fallback, and no
 # dependency on any unreleased capability.
+#
+# The adapter invokes only `lavish-axi poll`; it never opens, exports, publishes,
+# or shares an artifact. bin/fm-lavish-review.sh owns the allowed path check.
 #
 # LOSS LIMITATION, stated plainly. The published poll destructively clears
 # feedback before returning it. A result lost after that clearing and before the
@@ -47,18 +59,29 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,35p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() {
+  awk '
+    NR == 1 { next }
+    /^#/ { sub(/^# ?/, ""); print; next }
+    { exit }
+  ' "${BASH_SOURCE[0]}" >&2
+  exit 2
+}
+
+checked_artifact() {
+  local artifact=${1-}
+  [ -n "$artifact" ] || usage
+  "$SCRIPT_DIR/fm-lavish-review.sh" check "$artifact" \
+    || die "artifact failed Firstmate's private local path check: $artifact"
+}
 
 # Canonical identity is physical, not the path string: Lavish itself keys a
-# session on the realpath of the artifact, so two names for one file are one
-# source and must never become two owners.
+# session on the realpath of the artifact. The path checker rejects symlinked
+# artifacts and roots before returning the one physical prepared path.
 cmd_source_id() {
   local artifact=${1-} real
   [ -n "$artifact" ] || usage
-  case "$artifact" in *$'\n'*) die "artifact paths cannot contain newlines" ;; esac
-  real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
-    || die "cannot resolve the artifact path: $artifact"
-  [ -f "$real" ] || die "artifact does not exist: $artifact"
+  real=$(checked_artifact "$artifact") || exit 1
   if command -v shasum >/dev/null 2>&1; then
     printf 'lavish-%s\n' "$(printf '%s' "$real" | shasum -a 256 | awk '{print substr($1,1,16)}')"
   else
@@ -67,14 +90,33 @@ cmd_source_id() {
 }
 
 cmd_arm() {
-  local artifact=${1-} id real
+  local artifact=${1-} id real agent_reply='' reply_bytes
   [ -n "$artifact" ] || usage
+  shift
+  case "$#" in
+    0) ;;
+    2)
+      [ "$1" = --agent-reply ] || usage
+      agent_reply=$2
+      [ -n "$agent_reply" ] || die "--agent-reply requires a non-empty message"
+      case "$agent_reply" in *$'\n'*) die "--agent-reply must be one line" ;; esac
+      reply_bytes=$(printf '%s' "$agent_reply" | wc -c | tr -d '[:space:]')
+      [ "$reply_bytes" -le 4096 ] || die "--agent-reply cannot exceed 4096 bytes"
+      ;;
+    *) usage ;;
+  esac
   command -v lavish-axi >/dev/null 2>&1 || die "lavish-axi is not installed"
-  id=$(cmd_source_id "$artifact") || exit 1
-  real=$(perl -MCwd=realpath -e '$p = realpath($ARGV[0]); defined($p) or exit 1; print "$p\n"' "$artifact" 2>/dev/null) \
-    || die "cannot resolve the artifact path: $artifact"
-  # The plain blocking form: no --timeout-ms, so completion is a server event.
-  "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- lavish-axi poll "$real" || exit 1
+  real=$(checked_artifact "$artifact") || exit 1
+  id=$(cmd_source_id "$real") || exit 1
+  # The blocking form has no --timeout-ms, so completion is a server event.
+  # Registration stores argv one element per line and executes it directly.
+  if [ -n "$agent_reply" ]; then
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- \
+      lavish-axi poll "$real" --agent-reply "$agent_reply" || exit 1
+  else
+    "$SCRIPT_DIR/fm-procevent.sh" register lavish "$id" -- \
+      lavish-axi poll "$real" || exit 1
+  fi
   printf 'armed: %s\n' "$id"
   printf 'artifact: %s\n' "$real"
 }
@@ -126,21 +168,17 @@ cmd_classify() {
   fi
 }
 
-# Whether a captured result ends this source, for the generic runner's automatic
-# retirement. Lavish's notion of "ended" lives here and nowhere else: an ended
-# session produces nothing further, a missing session has nothing left to
-# produce, and the published poll delivers the final feedback of a `Send & End`
-# review marked with session_ended and returns only empty ended sessions after
-# it. Anything else - including an unreadable result - keeps the source armed.
+# Whether a captured result retires this registration before the runner can
+# restart it. A returned feedback poll is finished even when its browser session
+# remains open, and only its handler knows when the revision plus --agent-reply
+# are ready. Ended and missing sessions also stop. Waiting and unknown output
+# stay registered so ordinary recovery can reconcile an interrupted poll.
 cmd_terminal() {
   local file=${1-}
   [ -n "$file" ] || usage
   [ -f "$file" ] || die "result file does not exist: $file"
   case "$(cmd_classify "$file")" in
-    ended|missing) return 0 ;;
-  esac
-  case "$(session_field "$file" session_ended)" in
-    true|True|TRUE) return 0 ;;
+    feedback|ended|missing) return 0 ;;
   esac
   return 1
 }

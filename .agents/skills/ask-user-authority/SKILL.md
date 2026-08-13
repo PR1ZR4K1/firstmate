@@ -44,6 +44,7 @@ State all five of these elements in one concise, evidence-first escalation:
 5. A recommendation with the reason it best serves the accepted intent.
 
 Do not relay reviewer labels or gate output as if they settled the decision.
+When several options, structured input, or a rich comparison materially improve that captain-owned escalation, load `lavish-review` for presentation without changing this authority decision.
 
 ## Classification examples
 

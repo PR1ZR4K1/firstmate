@@ -18,6 +18,7 @@ set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TMP_ROOT=$(fm_test_tmproot fm-procevent-tests)
+TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 export FM_PROCEVENT_CLAIM_ROOT="$TMP_ROOT/claims"
 
 BLOCKER="$TMP_ROOT/blocker.sh"
@@ -494,9 +495,10 @@ else
 fi
 SH
 chmod +x "$LAVISH_BIN/lavish-axi"
-REVIEW_ART="$TMP_ROOT/review.html"
+FM_HOME="$HLT" "$ROOT/bin/fm-lavish-review.sh" prepare "$HLT" send-and-end >/dev/null
+REVIEW_ART="$HLT/.lavish/send-and-end/review.html"
 printf '<h1>review</h1>\n' > "$REVIEW_ART"
-lavish_id=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
+lavish_id=$(FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$REVIEW_ART")
 PE_TRACKED+=("$HLT|$lavish_id")
 PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" arm "$REVIEW_ART" >/dev/null
 for _ in $(seq 1 6); do
@@ -517,6 +519,68 @@ assert_grep 'ship it' "$LAVISH_RESULT" "automatic retirement retains the human's
 out=$(PATH="$LAVISH_BIN:$PATH" FM_HOME="$HLT" "$ROOT/bin/fm-procevent-lavish.sh" retire "$REVIEW_ART")
 assert_contains "$out" "retired: $lavish_id" "explicit adapter retirement stays supported after automatic retirement"
 pass "one Send & End yields exactly one captured result, automatic retirement, and no recurring poll"
+
+# Ordinary feedback also retires its completed poll before handler work.
+# Continuation is explicit and carries --agent-reply through the same durable
+# callback, so no plain poll can race ahead and leave the browser waiting for an
+# agent response that was never sent.
+HLF="$TMP_ROOT/hlf"; new_home "$HLF"
+LAVISH_REPLY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-reply-stub")
+LAVISH_REPLY_COUNT="$TMP_ROOT/lavish-reply-count"
+LAVISH_REPLY_LOG="$TMP_ROOT/lavish-reply-argv"
+export LAVISH_REPLY_COUNT LAVISH_REPLY_LOG
+cat > "$LAVISH_REPLY_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+n=$(cat "$LAVISH_REPLY_COUNT" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$LAVISH_REPLY_COUNT"
+printf -- 'call=%s\n' "$n" >> "$LAVISH_REPLY_LOG"
+for arg in "$@"; do printf '<%s>\n' "$arg" >> "$LAVISH_REPLY_LOG"; done
+if [ "$n" = 1 ]; then
+  printf 'session:\n  file: /review.html\n  status: feedback\nprompts[1]{text}:\n  choose sample A\n'
+else
+  printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: agent\n'
+fi
+SH
+chmod +x "$LAVISH_REPLY_BIN/lavish-axi"
+FM_HOME="$HLF" "$ROOT/bin/fm-lavish-review.sh" prepare "$HLF" ordinary-feedback >/dev/null
+REPLY_ART="$HLF/.lavish/ordinary-feedback/review.html"
+printf '<h1>ordinary feedback</h1>\n' > "$REPLY_ART"
+reply_id=$(FM_HOME="$HLF" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$REPLY_ART")
+PE_TRACKED+=("$HLF|$reply_id")
+PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HLF" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REPLY_ART" >/dev/null
+PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HLF" reconcile >/dev/null
+for _ in $(seq 1 60); do
+  [ "$(count_results "$HLF" "$reply_id")" -ge 1 ] && break
+  sleep 0.1
+done
+[ "$(count_results "$HLF" "$reply_id")" = 1 ] \
+  || fail "ordinary feedback was not captured exactly once"
+for _ in $(seq 1 60); do
+  [ ! -e "$HLF/state/procevent/$reply_id.source" ] && break
+  sleep 0.1
+done
+assert_absent "$HLF/state/procevent/$reply_id.source" \
+  "ordinary feedback left a plain poll registration armed before handler work"
+
+PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HLF" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REPLY_ART" \
+  --agent-reply "Applied the sample choice." >/dev/null
+PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HLF" reconcile >/dev/null
+for _ in $(seq 1 60); do
+  [ "$(count_results "$HLF" "$reply_id")" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(count_results "$HLF" "$reply_id")" = 2 ] \
+  || fail "the handler-mediated Lavish re-arm did not capture its next result"
+assert_grep '<poll>' "$LAVISH_REPLY_LOG" "Lavish callback invokes only the poll subcommand"
+assert_grep '<--agent-reply>' "$LAVISH_REPLY_LOG" "Lavish continuation carries the agent-reply flag"
+assert_grep '<Applied the sample choice.>' "$LAVISH_REPLY_LOG" "Lavish continuation preserves the reply as one argv element"
+assert_no_grep '<share>' "$LAVISH_REPLY_LOG" "Lavish callback must never publish or share"
+[ "$(cat "$LAVISH_REPLY_COUNT")" = 2 ] \
+  || fail "explicit continuation ran an unexpected number of polls: $(cat "$LAVISH_REPLY_COUNT")"
+pass "ordinary feedback stops before handler work and resumes only through the approved callback with agent reply"
 
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a
@@ -1014,24 +1078,26 @@ assert_absent "$FM_PROCEVENT_CLAIM_ROOT/bad-limit.claim" "invalid output bound l
 pass "invalid output bounds fail closed"
 
 # --- the Lavish adapter uses the published poll shape -----------------------
-ART="$TMP_ROOT/artifact.html"
+HART="$TMP_ROOT/hartifact"; new_home "$HART"
+FM_HOME="$HART" "$ROOT/bin/fm-lavish-review.sh" prepare "$HART" adapter-source >/dev/null
+ART="$HART/.lavish/adapter-source/review.html"
 printf '<h1>fixture</h1>\n' > "$ART"
-sid=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
+sid=$(FM_HOME="$HART" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
 case "$sid" in lavish-*) : ;; *) fail "adapter source id has an unexpected shape: $sid" ;; esac
-sid2=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
+sid2=$(FM_HOME="$HART" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART")
 [ "$sid" = "$sid2" ] || fail "adapter source id is not stable"
-ART_ALIAS="$TMP_ROOT/artifact-alias.html"
+ART_ALIAS="$HART/.lavish/adapter-source/review-alias.html"
 ln -s "$ART" "$ART_ALIAS"
-sid3=$(FM_HOME="$TMP_ROOT/hg" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_ALIAS")
-[ "$sid" = "$sid3" ] || fail "a final-component symlink produced a second source id"
-ART_NEWLINE="$TMP_ROOT/line-ending"$'\n'
-printf '<h1>newline fixture</h1>\n' > "$ART_NEWLINE"
-printf '<h1>sibling fixture</h1>\n' > "$TMP_ROOT/line-ending"
+symlink_artifact_status=0
+symlink_artifact_out=$(FM_HOME="$HART" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_ALIAS" 2>&1) || symlink_artifact_status=$?
+[ "$symlink_artifact_status" -ne 0 ] || fail "Lavish source identity accepted a symlinked artifact"
+assert_contains "$symlink_artifact_out" "private local path check" "Lavish rejects symlinked artifacts before registration"
+ART_NEWLINE="$ART"$'\n'
 newline_artifact_status=0
-newline_artifact_out=$("$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_NEWLINE" 2>&1) || newline_artifact_status=$?
+newline_artifact_out=$(FM_HOME="$HART" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ART_NEWLINE" 2>&1) || newline_artifact_status=$?
 [ "$newline_artifact_status" -ne 0 ] || fail "Lavish source identity accepted an artifact path ending in a newline"
-assert_contains "$newline_artifact_out" "cannot contain newlines" "Lavish rejects newline paths before canonicalization"
-pass "the adapter derives physical identity without newline path corruption"
+assert_contains "$newline_artifact_out" "cannot contain newlines" "Lavish rejects newline paths before registration"
+pass "the adapter derives stable private identity and rejects symlink or newline paths"
 
 HS="$TMP_ROOT/hs"; new_home "$HS"
 mkdir -p "$HS/state/procevent"
@@ -1058,10 +1124,9 @@ printf 'garbage that is not a session block\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" unknown "malformed output classifies as unknown rather than a lifecycle state"
 pass "the adapter classifies published poll output safely"
 
-# The adapter, not the runner, decides which results end a Lavish source. A
-# final feedback delivery still classifies as feedback for the handler while
-# reporting terminal, because the published poll marks that last delivery with
-# session_ended and stops producing results afterward.
+# The adapter, not the runner, decides which results stop a Lavish registration.
+# Every completed feedback poll retires before handler work so a plain automatic
+# restart cannot race ahead of the required revision and --agent-reply.
 TRM="$TMP_ROOT/terminal-verdict"
 printf 'session:\n  file: /a.html\n  status: feedback\n  session_ended: true\n  ended_by: user\n' > "$TRM"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$TRM")" feedback \
@@ -1070,7 +1135,7 @@ assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$TRM")" feedback
   || fail "a feedback delivery carrying session_ended was not reported terminal"
 printf 'session:\n  file: /a.html\n  status: feedback\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
-  && fail "an ordinary feedback delivery was reported terminal"
+  || fail "ordinary feedback did not retire before handler-mediated re-arm"
 printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" || fail "an ended session was not reported terminal"
 printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$TRM"
@@ -1079,10 +1144,10 @@ printf 'session:\n  file: /a.html\n  status: waiting\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "a waiting session was reported terminal"
 printf 'garbage that is not a session block\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "an unreadable result was reported terminal"
-printf 'session:\n  file: /a.html\n  status: feedback\nfeedback[1]{text}:\n  session_ended: true\n' > "$TRM"
+printf 'session:\n  file: /a.html\n  status: waiting\nfeedback[1]{text}:\n  session_ended: true\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
   && fail "prompt payload text was read as a session-level terminal marker"
-pass "the adapter owns which Lavish results end a source, and payload text cannot forge one"
+pass "the adapter stops every completed Lavish poll before handler re-arm, and payload text cannot forge a lifecycle field"
 
 # --- the loss limitation is stated on the public interface ------------------
 # Checked through --help, the operator-facing surface, rather than by reading
@@ -1092,6 +1157,11 @@ assert_contains "$adapter_help" "destructively clears" \
   "the adapter's help states the destructive-source loss limitation"
 assert_contains "$adapter_help" "Never describe" \
   "the adapter's help forbids an at-least-once or lossless description"
+assert_contains "$adapter_help" "current poll registration retires before handler work" \
+  "the adapter's help states the handler-mediated re-arm boundary"
+# shellcheck disable=SC2016 # Backticks are literal public-help text.
+assert_contains "$adapter_help" 'invokes only `lavish-axi poll`' \
+  "the adapter's help excludes opening, export, publication, and sharing"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \

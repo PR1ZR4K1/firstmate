@@ -21,8 +21,9 @@
 #            the claim. It blocks for as long as the source blocks and is meant
 #            to run as a supervised background process, never in a conversational
 #            turn. After publishing, it asks the source's own adapter whether the
-#            captured result ends the source and retires the registration when it
-#            says so, so a source that has ended stops being restarted.
+#            captured result makes this registration terminal and retires it when
+#            told, so an ended source or handler-mediated continuation is never
+#            restarted automatically.
 # reconcile  Idempotent liveness entry the watcher calls on its ordinary cycle:
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
@@ -38,18 +39,19 @@
 #            bounded re-announcement on every reconcile. Marking a result
 #            handled does not retire its source registration or claim.
 # retire     Drop a registration, stop a runner this home owns, release the claim.
-#            Idempotent, and still the supported explicit path after a source has
+#            Idempotent, and still the supported explicit path after a registration
 #            already retired itself on its adapter's terminal verdict.
 # sweep-home Retire a bounded snapshot of this home's registrations and owned
 #            claims, then refuse unless no registration, runner record, or owned
 #            claim remains. Used by supported Firstmate home retirement.
 # list       Show registered sources, owners, and pending captured results.
 #
-# Terminal knowledge is adapter-owned. This runner never inspects a result and
-# never names an adapter-specific status: it calls
+# Terminal-registration knowledge is adapter-owned. This runner never inspects a
+# result and never names an adapter-specific status: it calls
 # `bin/fm-procevent-<adapter>.sh terminal <result-file>` and treats exit 0 as the
-# only terminal verdict. A missing command, an error, or any other exit keeps the
-# registration armed, so an adapter that has no notion of ending needs no change.
+# only stop verdict. An adapter may stop because the external source ended or
+# because safe continuation requires explicit handler-mediated re-arming.
+# A missing command, an error, or any other exit keeps the registration armed.
 #
 # Applying a result is adapter-owned through the same kind of seam. Some results
 # carry no judgement at all - they must simply be applied idempotently to the
@@ -90,14 +92,21 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,74p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() {
+  awk '
+    NR == 1 { next }
+    /^#/ { sub(/^# ?/, ""); print; next }
+    { exit }
+  ' "${BASH_SOURCE[0]}" >&2
+  exit 2
+}
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
-# Ask the source's own adapter whether a captured result ends the source. Exit 0
-# is the only terminal verdict; everything else - including a missing adapter
-# command - keeps the registration armed. See the terminal-knowledge note in the
-# header: no adapter-specific condition may appear in this runner.
+# Ask the source's own adapter whether a captured result makes this registration
+# terminal. Exit 0 is the only stop verdict; everything else, including a missing
+# adapter command, keeps the registration armed. See the terminal-registration
+# note in the header: no adapter-specific condition may appear in this runner.
 adapter_result_is_terminal() {  # <adapter> <result-file>
   local script
   script=$(adapter_script "$1")
@@ -356,11 +365,11 @@ cmd_start() {
   fi
   publish_pending "$durable" >/dev/null
   rm -f -- "$(runner_file "$id")"
-  # The result is already durable, so retiring an ended source here cannot cost
-  # its captured output; if publication failed, later reconciliation can still
-  # announce that inbox result without a registration. Leaving the source armed
-  # would instead let every reconcile restart a source that only returns empty
-  # ended results.
+  # The result is already durable, so retiring this registration here cannot
+  # cost its captured output; if publication failed, later reconciliation can
+  # still announce that inbox result without a registration. Leaving a
+  # terminal registration armed would instead let reconcile restart a source
+  # whose adapter requires it to remain stopped until handling.
   if adapter_result_is_terminal "$adapter" "$durable"; then
     if retire_owned_terminal_source "$id"; then
       printf 'retired: %s (adapter classified the captured result terminal)\n' "$id"
