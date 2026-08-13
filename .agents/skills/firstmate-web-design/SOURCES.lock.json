@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "owner": "Firstmate",
+  "localDestination": ".agents/skills/firstmate-web-design/SKILL.md",
+  "localSkillSha256": "f343f4522df8728281409896dc7c29d64938dac1d581ea75c808ff90f02b8170",
+  "instructionOnly": true,
+  "reviewEvidence": {
+    "assessmentTitle": "Firstmate design toolbox and Phase C tweaks-bar assessment",
+    "assessmentDate": "2026-08-13",
+    "assessmentHomeRelativePath": "data/design-toolbox-tweaks-assessment/report.md",
+    "assessmentSha256": "c396a987e4c0e51f36e6c4d82f98f8bd7e81dc8cf56ee521eba7667c3181759a",
+    "captainApprovedDecision": "Choice B: pinned Firstmate-owned static toolbox only",
+    "verification": [
+      "Verified each upstream owner, repository, and immutable commit with gh-axi.",
+      "Read each exact source and license file as untrusted evidence without running upstream code.",
+      "Recomputed every listed SHA-256 digest and matched the reviewed assessment.",
+      "Reviewed the adaptation to contain instructions only and no executable upstream file, hook, network call, account, telemetry, mutable instruction, or project design record."
+    ],
+    "runtimeVerification": {
+      "date": "2026-08-13",
+      "command": "FM_FIRSTMATE_WEB_DESIGN_LIVE_E2E=1 FM_FIRSTMATE_WEB_DESIGN_CODEX_E2E=1 FM_FIRSTMATE_WEB_DESIGN_CODEX_BIN=\"$HOME/.codex/plugins/.plugin-appserver/codex\" tests/fm-firstmate-web-design-live-e2e.test.sh",
+      "piVersion": "0.84.1",
+      "piModel": "openai-codex/gpt-5.6-sol",
+      "codexVersion": "0.146.0-alpha.9.2",
+      "codexModel": "gpt-5.6-sol",
+      "output": [
+        "ok - backend-only work does not activate the design skill",
+        "ok - operate, persuade, read, experience, preservation, responsive states, trust, and bounded iteration",
+        "ok - attribution, license, digest, adaptation, and review evidence remain intact",
+        "ok - supported images stay on the local attachment path",
+        "ok - Codex discovers and invokes the same project skill through public behavior",
+        "# all firstmate-web-design live behavior tests passed"
+      ]
+    }
+  },
+  "localLicenseCopies": [
+    {
+      "path": ".agents/skills/firstmate-web-design/licenses/Apache-2.0.license",
+      "license": "Apache-2.0",
+      "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "source": "Exact clean license terms from the pinned anthropics/skills frontend-design source."
+    },
+    {
+      "path": ".agents/skills/firstmate-web-design/licenses/Vercel-MIT.license",
+      "license": "MIT",
+      "sha256": "6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2",
+      "source": "Exact license file from the pinned vercel-labs/web-interface-guidelines source."
+    }
+  ],
+  "sources": [
+    {
+      "attribution": "Portions adapted from Anthropic's frontend-design skill.",
+      "owner": "anthropics",
+      "repository": "anthropics/skills",
+      "commit": "f6656c1256d5a8adfa37db9110046ef20bac644c",
+      "upstreamVersion": null,
+      "sourcePath": "skills/frontend-design/SKILL.md",
+      "sourceUrl": "https://github.com/anthropics/skills/blob/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/frontend-design/SKILL.md",
+      "sourceSha256": "1608ea77fbb6fc30d13a97d12cfa8ebf31358d40f0dd97beed24829d6b3f45dd",
+      "license": "Apache-2.0",
+      "licensePath": "skills/frontend-design/LICENSE.txt",
+      "licenseUrl": "https://github.com/anthropics/skills/blob/f6656c1256d5a8adfa37db9110046ef20bac644c/skills/frontend-design/LICENSE.txt",
+      "licenseSha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594",
+      "licenseLocalCopy": ".agents/skills/firstmate-web-design/licenses/Apache-2.0.license",
+      "adaptations": [
+        "Retained subject-grounded, intentional visual direction and concrete content-first choices.",
+        "Replaced novelty-first studio roleplay and universal aesthetic pressure with project authority and evidence.",
+        "Bound direction to at most three options and implementation to one correction and one confirmation.",
+        "Removed external font, asset, memory-note, remote image, and open-ended iteration implications."
+      ]
+    },
+    {
+      "attribution": "Portions adapted from Anthropic's design-critique skill.",
+      "owner": "anthropics",
+      "repository": "anthropics/knowledge-work-plugins",
+      "commit": "7ae615187d385efc0b748e7db7c1f00704914854",
+      "upstreamVersion": null,
+      "sourcePath": "design/skills/design-critique/SKILL.md",
+      "sourceUrl": "https://github.com/anthropics/knowledge-work-plugins/blob/7ae615187d385efc0b748e7db7c1f00704914854/design/skills/design-critique/SKILL.md",
+      "sourceSha256": "3a4f260eb9f60b431782bf6d90f22afb480c0c67860267a032df58a3e1bd19cd",
+      "license": "Apache-2.0",
+      "licensePath": "LICENSE",
+      "licenseUrl": "https://github.com/anthropics/knowledge-work-plugins/blob/7ae615187d385efc0b748e7db7c1f00704914854/LICENSE",
+      "licenseSha256": "a6946284993aeec75c7d75906064b66210c46051e562077efb30eb6dcfe72e26",
+      "licenseLocalCopy": ".agents/skills/firstmate-web-design/licenses/Apache-2.0.license",
+      "licenseReviewNote": "The exact upstream LICENSE digest includes non-license trailing text after the Apache appendix; that text was treated as untrusted evidence and was not adapted or copied into the clean local Apache-2.0 terms.",
+      "adaptations": [
+        "Retained task success, usability, hierarchy, consistency, readability, accessibility, and evidence-based prioritization.",
+        "Required separate defect, evidence, impact, and recommendation fields.",
+        "Removed Claude, Cowork, Figma connector, user-feedback connector, and screenshot-acquisition assumptions.",
+        "Replaced a fixed decorative output template with a concise project-aware critique contract."
+      ]
+    },
+    {
+      "attribution": "Portions adapted from Vercel Labs' Web Interface Guidelines.",
+      "owner": "vercel-labs",
+      "repository": "vercel-labs/web-interface-guidelines",
+      "commit": "4e799d45c17aec1498c269287a83b9dba22b966b",
+      "upstreamVersion": null,
+      "sourcePath": "command.md",
+      "sourceUrl": "https://github.com/vercel-labs/web-interface-guidelines/blob/4e799d45c17aec1498c269287a83b9dba22b966b/command.md",
+      "sourceSha256": "eea73cb6dd46fee9faec9973e8e7fe198b5f07ec326f14d276a56e50287e1cab",
+      "license": "MIT",
+      "licensePath": "LICENSE",
+      "licenseUrl": "https://github.com/vercel-labs/web-interface-guidelines/blob/4e799d45c17aec1498c269287a83b9dba22b966b/LICENSE",
+      "licenseSha256": "6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2",
+      "licenseLocalCopy": ".agents/skills/firstmate-web-design/licenses/Vercel-MIT.license",
+      "adaptations": [
+        "Selected a concise implementation floor for semantics, keyboard and focus, forms and states, responsive content, theming, localization, reduced motion, and layout stability.",
+        "Converted universal framework-specific checks into project-aware evidence prompts.",
+        "Removed the mutable-fetch wrapper, package suggestions, framework assumptions, fixed copy style, and line-oriented review format.",
+        "Did not copy install.sh or any executable upstream file."
+      ]
+    }
+  ],
+  "updatePolicy": [
+    "Never run an upstream installer or fetch instructions from a mutable branch at use time.",
+    "Review an exact new commit, source path, license, diff, executable surface, network behavior, account behavior, telemetry, and project mutations before changing a pin.",
+    "Recompute content and license digests, update attribution and adaptation notes, and run the complete public-behavior corpus before landing an update.",
+    "Require new captain approval before adding any account, spend, upload, telemetry, binary, hook, MCP server, project mutation, license change, or data-use change."
+  ]
+}

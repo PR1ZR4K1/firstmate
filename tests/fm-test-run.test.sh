@@ -99,6 +99,7 @@ init_changed_fixture_repo() {
     fm-cd-pretool-check.test.sh \
     fm-daemon.test.sh \
     fm-backend-herdr-smoke.test.sh \
+    fm-firstmate-web-design-live-e2e.test.sh \
     fm-secondmate-safety.test.sh \
     fm-session-start.test.sh \
     fm-afk-pi-herdr-return-e2e.test.sh \
@@ -120,8 +121,11 @@ init_changed_fixture_repo() {
   printf '# .claude/settings.json\n# .pi/extensions/fm-primary-turnend-guard.ts\n' \
     >>"$repo/tests/fm-cd-pretool-check.test.sh"
   printf '# .pi/extensions/fm-primary-pi-watch.ts\n' >>"$repo/tests/fm-pi-watch-extension.test.sh"
-  mkdir -p "$repo/.agents/skills/example" "$repo/.claude" "$repo/.pi/extensions" "$repo/src"
+  mkdir -p "$repo/.agents/skills/example" "$repo/.agents/skills/firstmate-web-design" \
+    "$repo/.claude" "$repo/.pi/extensions" "$repo/src"
   : >"$repo/.agents/skills/example/SKILL.md"
+  : >"$repo/.agents/skills/firstmate-web-design/SKILL.md"
+  printf '{"schemaVersion":1}\n' >"$repo/.agents/skills/firstmate-web-design/SOURCES.lock.json"
   : >"$repo/.claude/settings.json"
   : >"$repo/.pi/extensions/fm-primary-pi-watch.ts"
   : >"$repo/.pi/extensions/fm-primary-turnend-guard.ts"
@@ -169,6 +173,16 @@ test_changed_dependency_selection_and_unmapped_failure() {
   assert_contains "$listed" "tests/fm-pi-watch-extension.test.sh" "Pi source selects watcher coverage"
   git -C "$repo" add .agents .claude .pi
   git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm non-bin-source-change
+
+  printf '{"schemaVersion":1,"reviewed":true}\n' \
+    >"$repo/.agents/skills/firstmate-web-design/SOURCES.lock.json"
+  listed=$(cd "$repo" && bin/fm-test-run.sh --list --changed --base HEAD)
+  assert_contains "$listed" "tests/fm-firstmate-web-design-live-e2e.test.sh" \
+    "design-skill provenance changes select the public behavior corpus"
+  assert_contains "$listed" "tests/fm-ask-user-authority.test.sh" \
+    "design-skill provenance changes retain portable instruction coverage"
+  git -C "$repo" add .agents/skills/firstmate-web-design/SOURCES.lock.json
+  git -C "$repo" -c user.name=test -c user.email=test@example.invalid commit -qm design-skill-lock-change
 
   printf '\n' >>"$repo/src/unmapped.ts"
   set +e
