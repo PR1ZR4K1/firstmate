@@ -241,6 +241,7 @@ EOF
   assert_not_contains "$launch" 'META_API_KEY' "muse launch exposed META_API_KEY in worker argv"
   assert_not_contains "$launch" 'test-key' "muse launch exposed the credential value in worker argv"
   assert_contains "$launch" 'encode launch-brief' "muse launch did not deliver the brief positionally"
+  assert_not_contains " $launch " ' --approve ' "muse launch received Pi's project-trust override"
   assert_grep 'harness=muse' "$home/state/$id.meta" "muse harness was not recorded in meta"
   pass "muse spawn launches with autonomy, privacy control, and a positional brief"
 }

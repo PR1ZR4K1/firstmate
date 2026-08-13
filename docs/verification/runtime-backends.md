@@ -172,6 +172,55 @@ Valid cleanup removed only the exact task-bound target and left the control wind
 The metadata-only validation covers tmux, Herdr, Zellij, Orca, and cmux before backend dispatch.
 Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse share that backend cleanup boundary; their harness-specific hook files, tokens, and session-log sidecars are cleaned only after it, so no harness needs a separate endpoint parser.
 
+## Pi worker project trust
+
+The scoped worker launch was verified on 2026-08-13 against installed Pi 0.84.1.
+The executable-interface regressions exercise fresh Pi and pi-signed workers and scouts, seeded secondmates, safe relaunches, help-only discovery probes, raw Pi commands, non-Pi adapters, preserved launch arguments, unchanged trust/settings fixtures, and the literal transport used by every spawn-capable backend.
+
+```sh
+pi --version
+bin/fm-test-run.sh \
+  tests/fm-spawn-dispatch-profile.test.sh \
+  tests/fm-control-relaunch.test.sh \
+  tests/fm-pi-worker-trust.test.sh
+```
+
+Relevant bounded output:
+
+```text
+0.84.1
+ok - pi receives exactly one process-local --approve with intact worker argv while its discovery probe remains --help-only
+ok - pi-signed receives exactly one process-local --approve while preserving its executable identity and Pi argv
+ok - Pi and pi-signed scouts each receive exactly one process-local --approve in their isolated worktree
+ok - a raw command named pi remains outside the scoped project-trust grant
+ok - the scoped Pi worker launch leaves project trust and global settings byte-identical
+ok - a validated seeded pi-signed secondmate home receives the same process-local project trust with distinct runtime identity
+ok - an unseeded Pi secondmate home is refused before the process-local project-trust grant
+ok - safe Pi and pi-signed relaunches each keep their recorded isolated worktree and receive one process-local --approve
+ok - tmux transports the guarded Pi worker launch line as one literal payload
+ok - Herdr transports the guarded Pi worker launch line as one literal payload
+ok - Zellij transports the guarded Pi worker launch line as one literal payload
+ok - cmux transports the guarded Pi worker launch line as one literal payload
+ok - Orca transports the guarded Pi worker launch line as one literal payload
+```
+
+The live guard uses an isolated `PI_CODING_AGENT_DIR`, keeps `defaultProjectTrust` at `ask`, starts no model turn, sends no keypress, and makes a synthetic protected project extension write the success marker.
+It also requires the isolated trust store to remain absent, the isolated global settings to remain byte-identical, and the real `~/.pi/agent/trust.json` and `~/.pi/agent/settings.json` fingerprints to remain unchanged.
+
+```sh
+FM_PI_WORKER_TRUST_LIVE_E2E=1 \
+  bin/fm-test-run.sh tests/fm-pi-worker-trust-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - pi 0.84.1 loads a protected project extension without a trust prompt or persistent trust entry
+# pi-signed is not installed, so its live project-trust behavior is unverified here
+# checked 1 installed Pi-family executable(s); real trust and settings fingerprints stayed unchanged
+# all live Pi worker project-trust assertions passed
+```
+
 ## Composer classification matrix
 
 The shared composer classifier (`bin/fm-composer-lib.sh`, `fm_composer_classify_screen`) owns every composer shape fleet-wide; each backend contributes only a capture and a capability descriptor.

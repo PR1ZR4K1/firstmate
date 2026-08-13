@@ -113,6 +113,18 @@
 #   a failed or inconclusive probe omits it so older Pi versions remain launchable.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
+#   Every canonical pi or pi-signed worker launch receives Pi's process-local
+#   --approve project-trust override at the final launch boundary, after the
+#   selected executable and the existing project, isolation, dependency,
+#   authentication, task-record, and endpoint guards have passed. This includes
+#   fresh ship/scout launches, safe relaunches into their recorded isolated
+#   worktree, and local or remote secondmates whose seeded-home identity and
+#   isolation contract passed validate_firstmate_home_for_spawn. The override
+#   loads project-local Pi settings, resources, packages, and executable
+#   extensions with the worker's full user permissions; it is not a sandbox or
+#   tool-permission boundary. It neither saves project trust nor changes global
+#   settings. Raw launch commands, including a raw command whose executable is
+#   named pi or pi-signed, never receive the override from fm-spawn.
 #   config/secondmate-harness may also carry an optional model and effort as extra
 #   whitespace-separated tokens ("<harness> [<model>] [<effort>]"). For a
 #   --secondmate spawn, those tokens apply only when this spawn also resolves its
@@ -152,6 +164,8 @@
 #     __BRIEF__    absolute path to data/<task-id>/brief.md
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
+#     __PIAPPROVE__ process-local --approve, resolved only at the guarded final
+#                   boundary for a canonical Pi-family worker launch
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
@@ -1110,7 +1124,7 @@ launch_template() {
       ;;
     opencode) printf '%s' 'OPENCODE_CONFIG_CONTENT='\''{"permission":{"*":"allow"}}'\'' opencode __MODELFLAG__--prompt "$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     pi|pi-signed)
-      printf '%s' '__PIBIN____PITUIMODE__'
+      printf '%s' '__PIBIN____PITUIMODE____PIAPPROVE__'
       if [ "$kind" = secondmate ]; then
         printf '%s' ' __MODELFLAG____EFFORTFLAG__-e __PITURNEND__ -e __PIWATCH__ "$(__OPINPUT__ encode launch-brief < __BRIEF__)"'
       else
@@ -1156,6 +1170,7 @@ launch_template() {
   esac
 }
 
+CANONICAL_ADAPTER_LAUNCH=0
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
@@ -1185,10 +1200,12 @@ case "$ARG3" in
       harness_src='config/crew-harness'
     fi
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: no launch template for harness '$HARNESS' (from $harness_src or detection); pass a raw launch command to use an unverified adapter" >&2; exit 1; }
+    CANONICAL_ADAPTER_LAUNCH=1
     ;;
   *)
     HARNESS=$ARG3
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
+    CANONICAL_ADAPTER_LAUNCH=1
     ;;
 esac
 
@@ -2730,6 +2747,22 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 sleep 0.3
+# This is the canonical worker launch boundary: task identity and metadata are
+# published, executable and adapter inputs are pinned, a ship/scout is proven to
+# be in its isolated worktree (including on relaunch), and a secondmate is proven
+# to be in its seeded isolated home. Resolve Pi's one-run project-trust override
+# here rather than while parsing a harness name, so raw commands and every other
+# command surface remain byte-for-byte outside this grant.
+if [ "$CANONICAL_ADAPTER_LAUNCH" -eq 1 ]; then
+  case "$HARNESS" in
+    pi|pi-signed)
+      case "$LAUNCH" in
+        *__PIAPPROVE__*) LAUNCH=${LAUNCH//__PIAPPROVE__/' --approve'} ;;
+        *) echo "error: canonical $HARNESS worker launch is missing its guarded project-trust placeholder" >&2; exit 1 ;;
+      esac
+      ;;
+  esac
+fi
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then

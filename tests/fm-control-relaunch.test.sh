@@ -120,6 +120,18 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
+  cat > "$fb/pi" <<'SH'
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --help ]; then
+  printf '%s\n' 'Pi test' 'Options: --help --tui-mode <mode> --approve'
+  exit 0
+fi
+[ -z "${FM_FAKE_PI_ARGV_LOG:-}" ] || printf '%s\0' "$@" > "$FM_FAKE_PI_ARGV_LOG"
+exit 0
+SH
+  chmod +x "$fb/pi"
+  cp "$fb/pi" "$fb/pi-signed"
 }
 
 # new_case <name> [id] -> echoes a case dir with a live claude ship task.
@@ -271,6 +283,45 @@ test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint() {
   assert_grep "/exit" "$dir/fake/literal" "the previous agent should have been exited"
   assert_grep "encode launch-brief" "$dir/fake/literal" "the replacement should have been launched"
   pass "fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree"
+}
+
+test_pi_family_relaunch_keeps_scoped_project_trust_and_identity() {
+  local harness dir id out rc launch argv_log
+  for harness in pi pi-signed; do
+    id="rl-${harness}"
+    dir=$(new_case "relaunch-$harness" "$id")
+    add_ship_task "$dir" "$id" "$harness"
+    printf '%s' "$harness" > "$dir/fake/command"
+    printf '%s' "$harness" > "$dir/fake/becomes"
+
+    out=$(run_control "$dir" "$id" relaunch --note "continue in the recorded isolated copy"); rc=$?
+    expect_code 0 "$rc" "$harness relaunch should succeed"$'\n'"$out"
+    assert_contains "$out" "relaunched $id harness=$harness from=$harness" \
+      "$harness relaunch lost its executable identity"
+    launch=$(grep -F 'encode launch-brief' "$dir/fake/literal" | tail -1)
+    assert_contains "$launch" "FM_PI_HARNESS=$harness '$dir/fakebin/$harness' --tui-mode regular --approve -e '$dir/home/state/$id.pi-ext.ts'" \
+      "$harness replacement launch lost scoped project trust or existing launch arguments"
+    argv_log="$dir/$harness-relaunch.argv"
+    (
+      cd "$dir/wt" || exit 1
+      FM_FAKE_PI_ARGV_LOG="$argv_log" bash -c "$launch"
+    )
+    python3 - "$argv_log" "$dir/home/state/$id.pi-ext.ts" "$harness" <<'PY'
+import sys
+path, extension, harness = sys.argv[1:]
+args = [part.decode() for part in open(path, "rb").read().split(b"\0") if part]
+expected = ["--tui-mode", "regular", "--approve", "-e", extension]
+if len(args) != len(expected) + 1 or args[:-1] != expected:
+    raise SystemExit(f"{harness} relaunch argv changed: {args!r}")
+if args.count("--approve") != 1:
+    raise SystemExit(f"{harness} relaunch expected one --approve: {args!r}")
+if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
+    raise SystemExit(f"{harness} relaunch lost its typed launch brief")
+PY
+    [ "$(meta_field "$dir" "$id" worktree)" = "$dir/wt" ] \
+      || fail "$harness relaunch moved outside its recorded isolated worktree"
+  done
+  pass "safe Pi and pi-signed relaunches each keep their recorded isolated worktree and receive one process-local --approve"
 }
 
 test_relaunch_preserves_durable_task_metadata() {
@@ -1290,16 +1341,19 @@ test_spawn_relaunch_refuses_an_unrecorded_task() {
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   local dir out rc
   dir=$(new_case wrongcwd rl18)
-  add_ship_task "$dir" rl18 claude
+  add_ship_task "$dir" rl18 pi
   printf 'zsh' > "$dir/fake/command"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
-  out=$(run_spawn "$dir" rl18 --relaunch --harness claude); rc=$?
+  out=$(run_spawn "$dir" rl18 --relaunch --harness pi); rc=$?
   expect_code 1 "$rc" "a pane outside the worktree should refuse"
   assert_contains "$out" "not its recorded worktree" "the refusal should name the wrong location"
-  pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
+  assert_no_grep " --approve " "$dir/fake/literal" \
+    "Pi project trust was granted before relaunch worktree isolation passed"
+  pass "fm-spawn --relaunch: refuses before Pi project trust when the endpoint is outside the recorded copy"
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
+test_pi_family_relaunch_keeps_scoped_project_trust_and_identity
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context

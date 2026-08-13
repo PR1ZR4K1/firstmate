@@ -19,11 +19,16 @@ make_spawn_pi_probe() {
 #!/usr/bin/env bash
 set -u
 if [ "${1:-}" = --help ]; then
+  [ -z "${FM_FAKE_PI_PROBE_LOG:-}" ] || printf '%s\0' "$@" > "$FM_FAKE_PI_PROBE_LOG"
   if [ "${FM_FAKE_PI_VERSION:-0.84.0}" = 0.82.0 ]; then
     printf '%s\n' 'Pi 0.82.0' 'Options: --help'
   else
     printf '%s\n' "Pi ${FM_FAKE_PI_VERSION:-0.84.0}" 'Options: --help --tui-mode <mode>'
   fi
+  exit 0
+fi
+if [ -n "${FM_FAKE_PI_ARGV_LOG:-}" ]; then
+  printf '%s\0' "$@" > "$FM_FAKE_PI_ARGV_LOG"
 fi
 exit 0
 SH
@@ -113,6 +118,7 @@ run_spawn() {
     FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" \
     CLAUDE_CONFIG_DIR="${FM_TEST_CLAUDE_CONFIG_DIR:-}" \
     FM_FAKE_LAUNCH_LOG="$launchlog" FM_FAKE_PI_VERSION="${FM_TEST_PI_VERSION:-0.84.0}" \
+    FM_FAKE_PI_PROBE_LOG="${FM_TEST_PI_PROBE_LOG:-}" \
     GROK_HOME="$home/grok-home" PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
@@ -134,6 +140,58 @@ assert_meta_profile() {
   assert_grep "harness=$harness" "$meta" "meta missing harness=$harness"
   assert_grep "model=$model" "$meta" "meta missing model=$model"
   assert_grep "effort=$effort" "$meta" "meta missing effort=$effort"
+}
+
+execute_pi_launch() {  # <launch> <cwd> <argv-log>
+  local launch=$1 cwd=$2 argv_log=$3
+  (
+    cd "$cwd" || exit 1
+    FM_FAKE_PI_ARGV_LOG="$argv_log" bash -c "$launch"
+  )
+}
+
+assert_pi_argv() {  # <argv-log> <extension> <model> <thinking> <tui:on|off> <label>
+  local argv_log=$1 extension=$2 model=$3 thinking=$4 tui=$5 label=$6
+  python3 - "$argv_log" "$extension" "$model" "$thinking" "$tui" "$label" <<'PY'
+import sys
+
+path, extension, model, thinking, tui, label = sys.argv[1:]
+raw = open(path, "rb").read()
+args = [part.decode() for part in raw.split(b"\0") if part]
+expected = []
+if tui == "on":
+    expected += ["--tui-mode", "regular"]
+expected += ["--approve"]
+if model:
+    expected += ["--model", model]
+if thinking:
+    expected += ["--thinking", thinking]
+expected += ["-e", extension]
+if len(args) != len(expected) + 1 or args[:-1] != expected:
+    raise SystemExit(f"{label}: unexpected Pi argv: {args!r}; expected prefix {expected!r} plus one prompt")
+if args.count("--approve") != 1:
+    raise SystemExit(f"{label}: expected one --approve, got {args!r}")
+if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
+    raise SystemExit(f"{label}: launch brief lost its typed operational envelope: {args[-1]!r}")
+PY
+}
+
+assert_secondmate_pi_argv() {  # <argv-log> <turnend-extension> <watch-extension> <label>
+  local argv_log=$1 turnend=$2 watch=$3 label=$4
+  python3 - "$argv_log" "$turnend" "$watch" "$label" <<'PY'
+import sys
+
+path, turnend, watch, label = sys.argv[1:]
+raw = open(path, "rb").read()
+args = [part.decode() for part in raw.split(b"\0") if part]
+expected = ["--tui-mode", "regular", "--approve", "-e", turnend, "-e", watch]
+if len(args) != len(expected) + 1 or args[:-1] != expected:
+    raise SystemExit(f"{label}: unexpected Pi argv: {args!r}; expected prefix {expected!r} plus one prompt")
+if args.count("--approve") != 1:
+    raise SystemExit(f"{label}: expected one --approve, got {args!r}")
+if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
+    raise SystemExit(f"{label}: launch brief lost its typed operational envelope: {args[-1]!r}")
+PY
 }
 
 test_no_profile_keeps_claude_profile_defaults() {
@@ -383,6 +441,7 @@ test_active_dispatch_profile_allows_raw_launch_command() {
   assert_meta_profile "$HOME_DIR/state/$id.meta" custom-agent default default
   launch=$(cat "$LAUNCH_LOG")
   [ "$launch" = "custom-agent --flag" ] || fail "raw launch command changed"$'\n'"actual: $launch"
+  assert_not_contains " $launch " " --approve " "raw launch command received Pi's project-trust override"
   pass "active crew-dispatch profile allows the raw launch-command escape hatch"
 }
 
@@ -400,6 +459,7 @@ test_claude_threads_model_and_effort() {
   assert_contains "$launch" "claude --dangerously-skip-permissions --model 'sonnet' --effort 'high'" \
     "claude launch did not thread model and effort flags"
   assert_not_contains "$launch" "--tui-mode" "non-Pi launches must not receive Pi's TUI mode override"
+  assert_not_contains " $launch " " --approve " "non-Pi launches must not receive Pi's project-trust override"
   pass "claude receives --model and --effort profile flags"
 }
 
@@ -416,6 +476,7 @@ test_codex_threads_model_and_effort() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
     "codex launch did not thread model and reasoning effort config"
+  assert_not_contains " $launch " " --approve " "codex launch received Pi's project-trust override"
   pass "codex receives --model and model_reasoning_effort profile flags"
 }
 
@@ -450,6 +511,7 @@ test_grok_threads_model_and_reasoning_effort() {
   assert_contains "$launch" "grok --always-approve --model 'grok-4' --reasoning-effort 'high'" \
     "grok launch did not thread model and reasoning-effort flags"
   assert_not_contains "$launch" "--effort" "grok launch must use --reasoning-effort, not --effort"
+  assert_not_contains " $launch " " --approve " "grok launch received Pi's project-trust override"
   pass "grok receives --model and --reasoning-effort profile flags"
 }
 
@@ -506,6 +568,7 @@ test_opencode_threads_model_and_ignores_effort_axis() {
   assert_not_contains "$launch" "--effort" "opencode launch must not pass unsupported --effort"
   assert_not_contains "$launch" "--variant" "opencode launch must not pass run-only --variant"
   assert_not_contains "$launch" "--thinking" "opencode launch must not pass pi thinking flag"
+  assert_not_contains " $launch " " --approve " "opencode launch received Pi's project-trust override"
   pass "opencode receives --model and omits the unsupported effort axis"
 }
 
@@ -515,19 +578,29 @@ test_pi_threads_model_and_max_effort() {
   rec=$(make_spawn_case profile-pi pi "$id")
   read_case_record "$rec"
 
-  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
+  out=$(FM_TEST_PI_PROBE_LOG="$CASE_DIR/pi-probe.argv" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR" \
     --model openai-codex/gpt-5.6-sol --effort max)
   status=$?
   expect_code 0 "$status" "pi spawn with max effort should succeed"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi '$FAKEBIN_DIR/pi' --tui-mode regular --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
-    "pi launch did not force the regular TUI while threading the requested model and max thinking level"
+  assert_contains "$launch" "FM_PI_HARNESS=pi '$FAKEBIN_DIR/pi' --tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+    "pi launch did not apply one-run project trust while preserving regular TUI, model, and max thinking"
   assert_not_contains "$launch" "FM_FIRSTMATE_PI_LAUNCH_BRIEF=" \
     "pi launch still exports the removed Calm input-reroute binding"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi launch lost the canonical typed launch-brief envelope"
-  pass "pi receives --model and --thinking max profile flags"
+  execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/pi.argv"
+  assert_pi_argv "$CASE_DIR/pi.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
+    openai-codex/gpt-5.6-sol max on "plain Pi fresh worker"
+  python3 - "$CASE_DIR/pi-probe.argv" <<'PY'
+import sys
+args = [part.decode() for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
+if args != ["--help"]:
+    raise SystemExit(f"Pi discovery probe received worker-only argv: {args!r}")
+PY
+  pass "pi receives exactly one process-local --approve with intact worker argv while its discovery probe remains --help-only"
 }
 
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
@@ -543,8 +616,8 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$out" "spawned $id harness=pi-signed" "pi-signed spawn did not preserve its visible identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed openai-codex/gpt-5.6-sol max
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
-    "pi-signed launch did not force the regular TUI with Pi's model, thinking, and extension semantics"
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve --model 'openai-codex/gpt-5.6-sol' --thinking 'max' -e" \
+    "pi-signed launch did not apply one-run project trust while preserving Pi's model, thinking, and extension semantics"
   assert_contains "$launch" "fm-operational-input.sh' encode launch-brief" \
     "pi-signed launch lost the canonical typed launch-brief envelope"
   assert_present "$HOME_DIR/state/$id.pi-ext.ts" "pi-signed launch did not install Pi's turn-end extension"
@@ -560,7 +633,10 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_contains "$ext" "\"--gen\", \"$gen\"" "pi extension does not carry the armed incarnation gen"
   assert_contains "$ext" '"--source", "pi-ext"' "pi extension does not attribute its semantic source"
   assert_contains "$ext" 'pi.on("turn_end"' "pi extension lost the turn-end notification touch"
-  pass "pi-signed shares Pi launch semantics while preserving its configured and recorded identity"
+  execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/pi-signed.argv"
+  assert_pi_argv "$CASE_DIR/pi-signed.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
+    openai-codex/gpt-5.6-sol max on "pi-signed fresh worker"
+  pass "pi-signed receives exactly one process-local --approve while preserving its executable identity and Pi argv"
 }
 
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
@@ -581,16 +657,92 @@ test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
         "$harness $version launch must use the executable selected for probing"
       assert_not_contains "$launch" "FM_PI_HARNESS=$harness $harness" \
         "$harness $version launch must not re-resolve a bare executable in the worker"
+      assert_contains " $launch " " --approve " \
+        "$harness $version canonical worker launch must include process-local project trust"
       if [ "$version" = 0.82.0 ]; then
         assert_not_contains "$launch" "--tui-mode" \
           "$harness $version launch must omit unsupported --tui-mode"
       else
-        assert_contains "$launch" "'$FAKEBIN_DIR/$harness' --tui-mode regular" \
-          "$harness $version launch must preserve the regular TUI"
+        assert_contains "$launch" "'$FAKEBIN_DIR/$harness' --tui-mode regular --approve" \
+          "$harness $version launch must preserve the regular TUI before project trust"
       fi
     done
   done
   pass "Pi launch probing omits --tui-mode on older Pi and preserves it on supporting Pi"
+}
+
+test_pi_family_scouts_receive_scoped_project_trust() {
+  local harness rec id out status launch
+  for harness in pi pi-signed; do
+    id="profile-${harness}-scout-z8e"
+    rec=$(make_spawn_case "profile-${harness}-scout" "$harness" "$id")
+    read_case_record "$rec"
+
+    out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+      "$id" "$PROJ_DIR" --scout)
+    status=$?
+    expect_code 0 "$status" "$harness scout spawn should succeed"
+    assert_contains "$out" "spawned $id harness=$harness kind=scout" \
+      "$harness scout spawn lost its adapter or kind"
+    launch=$(cat "$LAUNCH_LOG")
+    execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/$harness-scout.argv"
+    assert_pi_argv "$CASE_DIR/$harness-scout.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
+      '' '' on "$harness scout"
+  done
+  pass "Pi and pi-signed scouts each receive exactly one process-local --approve in their isolated worktree"
+}
+
+test_raw_pi_command_does_not_receive_scoped_project_trust() {
+  local rec id out status launch
+  id=profile-raw-pi-z8f
+  rec=$(make_spawn_case profile-raw-pi pi "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR" "pi --raw-worker-probe")
+  status=$?
+  expect_code 0 "$status" "raw Pi launch command should remain available"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_not_contains " $launch " " --approve " \
+    "raw Pi launch command received canonical worker project trust"
+  PATH="$FAKEBIN_DIR:$PATH" execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/raw-pi.argv"
+  python3 - "$CASE_DIR/raw-pi.argv" <<'PY'
+import sys
+args = [part.decode() for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
+if args != ["--raw-worker-probe"]:
+    raise SystemExit(f"raw Pi argv changed: {args!r}")
+PY
+  pass "a raw command named pi remains outside the scoped project-trust grant"
+}
+
+test_pi_launch_keeps_trust_and_global_settings_unchanged() {
+  local rec id out status launch isolated_home agent_dir settings trust settings_before trust_before
+  id=profile-pi-trust-files-z8g
+  rec=$(make_spawn_case profile-pi-trust-files pi "$id")
+  read_case_record "$rec"
+  isolated_home="$CASE_DIR/isolated-home"
+  agent_dir="$CASE_DIR/pi-agent"
+  settings="$agent_dir/settings.json"
+  trust="$agent_dir/trust.json"
+  mkdir -p "$isolated_home" "$agent_dir"
+  printf '%s\n' '{"defaultProjectTrust":"never","sentinel":"unchanged"}' > "$settings"
+  printf '%s\n' '{}' > "$trust"
+  settings_before=$(shasum -a 256 "$settings")
+  trust_before=$(shasum -a 256 "$trust")
+
+  out=$(HOME="$isolated_home" PI_CODING_AGENT_DIR="$agent_dir" \
+    run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" \
+    "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "Pi launch with isolated trust files should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  HOME="$isolated_home" PI_CODING_AGENT_DIR="$agent_dir" \
+    execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/trust-files.argv"
+  [ "$(shasum -a 256 "$settings")" = "$settings_before" ] \
+    || fail "Pi worker launch changed the isolated global settings file"
+  [ "$(shasum -a 256 "$trust")" = "$trust_before" ] \
+    || fail "Pi worker launch created or changed a persistent project-trust entry"
+  pass "the scoped Pi worker launch leaves project trust and global settings byte-identical"
 }
 
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata() {
@@ -633,9 +785,34 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
     "pi-signed secondmate spawn did not preserve its runtime identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
   launch=$(cat "$LAUNCH_LOG")
-  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
-    "pi-signed secondmate did not force the regular TUI with Pi's primary extension launch shape"
-  pass "pi-signed is a distinct persistent secondmate runtime with shared Pi supervision semantics"
+  assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
+    "pi-signed secondmate did not apply scoped project trust with Pi's primary extension launch shape"
+  execute_pi_launch "$launch" "$sm" "$CASE_DIR/pi-signed-secondmate.argv"
+  assert_secondmate_pi_argv "$CASE_DIR/pi-signed-secondmate.argv" \
+    "$sm/.pi/extensions/fm-primary-turnend-guard.ts" \
+    "$sm/.pi/extensions/fm-primary-pi-watch.ts" "pi-signed secondmate"
+  pass "a validated seeded pi-signed secondmate home receives the same process-local project trust with distinct runtime identity"
+}
+
+test_pi_secondmate_refuses_before_project_trust_without_seeded_home() {
+  local rec id sm out status
+  id=profile-pi-unseeded-secondmate-z8h
+  rec=$(make_spawn_case profile-pi-unseeded-secondmate codex "$id")
+  read_case_record "$rec"
+  printf '%s\n' pi > "$HOME_DIR/config/secondmate-harness"
+  sm="$CASE_DIR/unseeded-secondmate-home"
+  mkdir -p "$sm/data"
+  : > "$LAUNCH_LOG"
+
+  out=$(run_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$sm" --secondmate)
+  status=$?
+  expect_code 1 "$status" "unseeded Pi secondmate home should refuse"
+  assert_contains "$out" "not a seeded secondmate home" \
+    "unseeded Pi secondmate refusal did not name the missing provisioned-home proof"
+  assert_absent "$HOME_DIR/state/$id.meta" "unseeded Pi secondmate refusal wrote task metadata"
+  [ ! -s "$LAUNCH_LOG" ] \
+    || fail "unseeded Pi secondmate received a launch command or process-local project trust"
+  pass "an unseeded Pi secondmate home is refused before the process-local project-trust grant"
 }
 
 test_batch_forwards_shared_profile_flags() {
@@ -744,8 +921,12 @@ test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
+test_pi_family_scouts_receive_scoped_project_trust
+test_raw_pi_command_does_not_receive_scoped_project_trust
+test_pi_launch_keeps_trust_and_global_settings_unchanged
 test_pi_signed_missing_binary_refuses_before_endpoint_or_metadata
 test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity
+test_pi_secondmate_refuses_before_project_trust_without_seeded_home
 test_batch_forwards_shared_profile_flags
 test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset

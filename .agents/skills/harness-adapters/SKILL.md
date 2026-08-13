@@ -267,7 +267,7 @@ Throwing from `session.idle` does not block `opencode run`, so the primary adapt
 The companion `.opencode/plugins/fm-primary-watch-arm.js` owns normal TUI watcher wake supervision and coordinates with the guard plugin before the guard tries a blind-turn follow-up.
 The follow-up was verified in the interactive TUI; `opencode run` can exit before displaying a queued follow-up, so the adapter is fail-open in headless mode.
 
-## pi and pi-signed (VERIFIED 2026-07-27)
+## pi and pi-signed (VERIFIED; project trust on Pi 0.84.1 on 2026-08-13, shared pi-signed behavior on 0.82.0 on 2026-07-27)
 
 | Fact | Value |
 |---|---|
@@ -286,11 +286,12 @@ Firstmate sets `FM_PI_HARNESS` explicitly for both worker launch identities, and
 Keep the brief as one positional argument.
 Multiple positional args become separate queued messages; `fm-spawn`'s template already does this correctly.
 
-Project trust dialog can appear on the first pi run in any not-yet-trusted directory, observed even on clean worktrees.
-Accept with Enter.
-The decision persists per path in `~/.pi/agent/trust.json`, so later spawns in the same worktree slot skip it.
+Normal Firstmate-launched Pi-family workers receive Pi's process-local `--approve` project-trust override after `fm-spawn` proves the isolated task worktree or seeded secondmate home, so no trust dialog is expected on fresh launches or safe relaunches.
+This permits project-local settings, skills, packages, and executable extensions to load with the worker's full user permissions; it is not a sandbox or a tool-permission boundary.
+The override saves no entry in `~/.pi/agent/trust.json` and changes no global setting.
+Keep trust-dialog handling as defensive compatibility: if an older Pi build or an unexpected nonstandard launch path still presents one, select `Trust (this session only)` when available and verify that the isolated worker starts processing its instructions.
 
-`fm-spawn` keeps the turn-end extension in `state/`, outside the worktree, because project-local extension files make the trust gate strictly worse and pollute the project.
+`fm-spawn` keeps the generated turn-end extension in `state/`, outside the worktree, so task wiring does not pollute the project or itself become a project-local protected resource.
 The extension must listen for pi's `turn_end` event, not `agent_end`, so the watcher wakes after each completed turn instead of only when the whole agent run exits.
 Pi sets `PI_CODING_AGENT=true` for its children; this is its harness-detection env marker.
 
@@ -300,7 +301,7 @@ Without `deliverAs: "followUp"`, Pi rejects the send while the agent is still pr
 Pi's primary watcher protocol also requires the tracked `.pi/extensions/fm-primary-pi-watch.ts` extension, same trust-once discovery as the turn-end guard.
 The model arms through `fm_watch_arm_pi`, never a foreground bash arm; the watcher tool result and clean-exit fallback are owned by `docs/supervision-protocols/pi.md`.
 `bin/fm-session-start.sh` reports when the live Pi-family session has not loaded both the turn-end guard and watcher extensions, and points at the selected executable after project trust as the fix, with `-e` as a trust-free fallback.
-When a secondmate is launched on Pi or pi-signed, `fm-spawn.sh --secondmate` launches the selected executable with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in the secondmate home's git worktree.
+When a secondmate is launched on Pi or pi-signed, the same process-local project-trust override is allowed only after `fm-spawn.sh --secondmate` validates the Firstmate-provisioned seeded home, then the selected executable launches with both `-e .pi/extensions/fm-primary-turnend-guard.ts` and `-e .pi/extensions/fm-primary-pi-watch.ts`, both already present in that home.
 
 ## grok (VERIFIED 2026-06-29, grok 0.2.73; slash-submit re-verified 2026-07-03 on 0.2.82; reasoning-effort ceiling re-verified 2026-07-13 on 0.2.99; exit paths re-verified 2026-07-19 on grok 0.2.103)
 
