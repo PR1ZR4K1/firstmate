@@ -12,8 +12,21 @@ const controls = {
 const cards = [...document.querySelectorAll('.reference-card')];
 const itemById = new Map();
 const selected = new Set();
+const cardImageIndex = new Map();
+const imageDialog = document.querySelector('#image-dialog');
+const imageViewerTitle = document.querySelector('#image-viewer-title');
+const imageViewerImage = document.querySelector('#image-viewer-image');
+const imageViewerNavigation = document.querySelector('#image-viewer-navigation');
+const imageViewerPrevious = document.querySelector('#image-viewer-previous');
+const imageViewerPosition = document.querySelector('#image-viewer-position');
+const imageViewerNext = document.querySelector('#image-viewer-next');
+const imageViewerContext = document.querySelector('#image-viewer-context');
+const imageViewerClose = document.querySelector('#image-viewer-close');
 let csrfToken = '';
 let liveTimer;
+let viewerItem;
+let viewerIndex = 0;
+let viewerReturnFocus;
 
 function announce(message) {
   const status = document.querySelector('#live-status');
@@ -101,6 +114,93 @@ function appendTextList(parent, heading, values) {
   for (const value of values) list.append(element('li', value));
   section.append(list);
   parent.append(section);
+}
+
+function previewImages(item) {
+  return Array.isArray(item.preview_images) ? item.preview_images : [];
+}
+
+function normalizedImageIndex(index, count) {
+  return ((index % count) + count) % count;
+}
+
+function setCardImage(item, requestedIndex) {
+  const images = previewImages(item);
+  if (images.length === 0) return 0;
+  const card = cards.find(candidate => candidate.dataset.id === item.id);
+  if (!card) return 0;
+  const index = normalizedImageIndex(requestedIndex, images.length);
+  const current = images[index];
+  const image = card.querySelector('[data-card-image]');
+  const openButton = card.querySelector('[data-open-image-viewer]');
+  const position = card.querySelector('[data-card-image-position]');
+  const hint = card.querySelector('[data-card-image-hint]');
+  cardImageIndex.set(item.id, index);
+  if (image) {
+    image.src = current.url;
+    image.alt = `Local preview of ${item.title}, image ${index + 1} of ${images.length}`;
+  }
+  if (openButton) {
+    openButton.dataset.imageIndex = String(index);
+    openButton.setAttribute('aria-label', `View ${item.title} image ${index + 1} of ${images.length} larger`);
+  }
+  if (position) position.textContent = `Image ${index + 1} of ${images.length}`;
+  if (hint) {
+    hint.textContent = images.length === 1
+      ? '1 local image - activate the preview to inspect it larger.'
+      : `${images.length} local images - image ${index + 1} is shown; browse or inspect it larger.`;
+  }
+  return index;
+}
+
+function moveCardImage(id, delta) {
+  const item = itemById.get(id);
+  if (!item) {
+    announce('Local image records are still loading');
+    return;
+  }
+  setCardImage(item, (cardImageIndex.get(id) || 0) + delta);
+}
+
+function setViewerImage(requestedIndex) {
+  if (!viewerItem) return;
+  const images = previewImages(viewerItem);
+  if (images.length === 0) return;
+  viewerIndex = normalizedImageIndex(requestedIndex, images.length);
+  const current = images[viewerIndex];
+  imageViewerTitle.textContent = `${viewerItem.id}: ${viewerItem.title}`;
+  imageViewerImage.src = current.url;
+  imageViewerImage.alt = `Larger local preview of ${viewerItem.title}, image ${viewerIndex + 1} of ${images.length}`;
+  imageViewerImage.hidden = false;
+  imageViewerPosition.textContent = `Image ${viewerIndex + 1} of ${images.length}`;
+  imageViewerContext.textContent = `Image ${viewerIndex + 1} of ${images.length}. Validated local ${current.role.replaceAll('-', ' ')}: ${current.path}. ${viewerItem.rights_summary}.`;
+  imageViewerNavigation.hidden = images.length < 2;
+  imageViewerPrevious.setAttribute('aria-label', `Previous enlarged image for ${viewerItem.title}`);
+  imageViewerNext.setAttribute('aria-label', `Next enlarged image for ${viewerItem.title}`);
+  setCardImage(viewerItem, viewerIndex);
+}
+
+function openImageViewer(id, index, returnFocus) {
+  const item = itemById.get(id);
+  if (!item || previewImages(item).length === 0) {
+    announce('No validated local image is available to inspect');
+    return;
+  }
+  viewerItem = item;
+  viewerReturnFocus = returnFocus;
+  setViewerImage(index);
+  imageDialog.showModal();
+  imageViewerClose.focus({ preventScroll: true });
+}
+
+function moveViewerImage(delta) {
+  if (viewerItem && previewImages(viewerItem).length > 1) setViewerImage(viewerIndex + delta);
+}
+
+function initializeCardGalleries() {
+  for (const item of itemById.values()) {
+    if (previewImages(item).length > 0) setCardImage(item, 0);
+  }
 }
 
 function ratingSelect(name, value) {
@@ -260,6 +360,7 @@ async function loadLibrary() {
     if (!response.ok) throw new Error(payload.error || 'library load failed');
     csrfToken = payload.csrf_token;
     for (const item of payload.items) itemById.set(item.id, item);
+    initializeCardGalleries();
     applyFilters();
   } catch (error) {
     announce(`Library unavailable: ${error.message}`);
@@ -271,6 +372,21 @@ for (const control of Object.values(controls)) {
 }
 
 document.addEventListener('click', event => {
+  const previousImage = event.target.closest('[data-card-image-previous]');
+  if (previousImage) {
+    moveCardImage(previousImage.dataset.cardImagePrevious, -1);
+    return;
+  }
+  const nextImage = event.target.closest('[data-card-image-next]');
+  if (nextImage) {
+    moveCardImage(nextImage.dataset.cardImageNext, 1);
+    return;
+  }
+  const openImage = event.target.closest('[data-open-image-viewer]');
+  if (openImage) {
+    openImageViewer(openImage.dataset.openImageViewer, Number(openImage.dataset.imageIndex), openImage);
+    return;
+  }
   const idButton = event.target.closest('[data-copy-id]');
   if (idButton) copyText(idButton.dataset.copyId, `Reference ID ${idButton.dataset.copyId} copied`);
   const citationButton = event.target.closest('[data-copy-citation]');
@@ -291,8 +407,8 @@ document.addEventListener('change', event => {
 
 document.querySelector('#gallery').addEventListener('keydown', event => {
   const card = event.target.closest('.reference-card');
-  if (!card) return;
-  if (event.target === card && event.key === 'Enter') {
+  if (!card || event.target !== card) return;
+  if (event.key === 'Enter') {
     event.preventDefault();
     showDetail(card.dataset.id);
     return;
@@ -335,6 +451,29 @@ document.querySelector('#build-brief').addEventListener('click', async () => {
 
 document.querySelector('#copy-brief').addEventListener('click', () => {
   copyText(document.querySelector('#generated-brief').value, 'Four-pillar brief copied');
+});
+
+imageViewerPrevious.addEventListener('click', () => moveViewerImage(-1));
+imageViewerNext.addEventListener('click', () => moveViewerImage(1));
+imageDialog.addEventListener('keydown', event => {
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault();
+    moveViewerImage(-1);
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault();
+    moveViewerImage(1);
+  }
+});
+imageDialog.addEventListener('close', () => {
+  const returnFocus = viewerReturnFocus;
+  viewerItem = undefined;
+  viewerReturnFocus = undefined;
+  imageViewerImage.hidden = true;
+  imageViewerImage.removeAttribute('src');
+  imageViewerImage.alt = '';
+  if (returnFocus && returnFocus.isConnected) {
+    queueMicrotask(() => returnFocus.focus({ preventScroll: true }));
+  }
 });
 
 loadLibrary();

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Set FM_DESIGN_GALLERY_BROWSER_E2E=1 to include the live localhost browser interaction regression.
 set -euo pipefail
 
 # shellcheck source=tests/lib.sh
@@ -10,6 +11,7 @@ MANIFEST_SCHEMA='firstmate.design-inspiration/v1'
 PREFERENCES_SCHEMA='firstmate.design-inspiration.preferences/v1'
 SERVER_HOME=''
 SERVER_PORT=''
+BROWSER_SESSION=''
 
 command -v jq >/dev/null 2>&1 || fail 'jq is required for design-inspiration interface tests'
 command -v node >/dev/null 2>&1 || fail 'node is required for design-inspiration gallery interface tests'
@@ -17,6 +19,9 @@ command -v node >/dev/null 2>&1 || fail 'node is required for design-inspiration
 cleanup_suite() {
   if [ -n "$SERVER_HOME" ]; then
     FM_HOME="$SERVER_HOME" FM_DESIGN_GALLERY_PORT="$SERVER_PORT" "$SCRIPT" gallery stop >/dev/null 2>&1 || true
+  fi
+  if [ -n "$BROWSER_SESSION" ] && command -v chrome-devtools-axi >/dev/null 2>&1; then
+    CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi stop >/dev/null 2>&1 || true
   fi
   fm_test_cleanup
 }
@@ -176,6 +181,203 @@ choose_port() {
       server.close();
     });
   '
+}
+
+write_test_png() {
+  local file=$1 red=$2 green=$3 blue=$4
+  node - "$file" "$red" "$green" "$blue" <<'NODE'
+const fs = require('node:fs');
+const zlib = require('node:zlib');
+const [file, red, green, blue] = process.argv.slice(2);
+const width = 64;
+const height = 40;
+const table = Array.from({ length: 256 }, (_, value) => {
+  let current = value;
+  for (let bit = 0; bit < 8; bit += 1) current = (current >>> 1) ^ (0xedb88320 & -(current & 1));
+  return current >>> 0;
+});
+function chunk(type, data) {
+  const body = Buffer.concat([Buffer.from(type), data]);
+  let crc = 0xffffffff;
+  for (const byte of body) crc = (crc >>> 8) ^ table[(crc ^ byte) & 0xff];
+  const result = Buffer.alloc(body.length + 12);
+  result.writeUInt32BE(data.length, 0);
+  body.copy(result, 4);
+  result.writeUInt32BE((crc ^ 0xffffffff) >>> 0, body.length + 4);
+  return result;
+}
+const rows = [];
+for (let y = 0; y < height; y += 1) {
+  const row = Buffer.alloc(1 + width * 3);
+  for (let x = 0; x < width; x += 1) {
+    row[1 + x * 3] = Number(red);
+    row[2 + x * 3] = Number(green);
+    row[3 + x * 3] = Number(blue);
+  }
+  rows.push(row);
+}
+const header = Buffer.alloc(13);
+header.writeUInt32BE(width, 0);
+header.writeUInt32BE(height, 4);
+header.set([8, 2, 0, 0, 0], 8);
+const png = Buffer.concat([
+  Buffer.from('89504e470d0a1a0a', 'hex'),
+  chunk('IHDR', header),
+  chunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+  chunk('IEND', Buffer.alloc(0)),
+]);
+fs.writeFileSync(file, png);
+NODE
+}
+
+test_browser_gallery_interactions() {
+  local url=$1 desktop touch
+  [ "${FM_DESIGN_GALLERY_BROWSER_E2E:-0}" = 1 ] || return 0
+  command -v chrome-devtools-axi >/dev/null 2>&1 || fail 'chrome-devtools-axi is required for the requested gallery browser regression'
+
+  BROWSER_SESSION="fm-design-gallery-$PPID-$$"
+  CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi open "$url" >/dev/null
+  CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi resize 1440 1000 >/dev/null
+  desktop=$(CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi run <<'EOF'
+await page.wait(200);
+const initial = await page.eval(() => {
+  const card = document.querySelector('[data-id="alpha"]');
+  return {
+    index: card.querySelector('[data-open-image-viewer]').dataset.imageIndex,
+    position: card.querySelector('[data-card-image-position]').textContent,
+    source: card.querySelector('[data-card-image]').getAttribute('src'),
+    pageFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    noImageTruthful: !document.querySelector('[data-id="beta"] [data-open-image-viewer]')
+      && document.querySelector('[data-id="beta"] [data-card-image-hint]').textContent.includes('No external preview was loaded'),
+    oneImageTruthful: !document.querySelector('[data-id="gamma"] [data-card-image-previous]')
+      && document.querySelector('[data-id="gamma"] [data-card-image-hint]').textContent.startsWith('1 local image'),
+  };
+});
+await page.click('[data-card-image-next="alpha"]');
+const afterMouse = await page.eval(() => {
+  const card = document.querySelector('[data-id="alpha"]');
+  return {
+    index: card.querySelector('[data-open-image-viewer]').dataset.imageIndex,
+    position: card.querySelector('[data-card-image-position]').textContent,
+    source: card.querySelector('[data-card-image]').getAttribute('src'),
+  };
+});
+await page.click('[data-open-image-viewer="alpha"]');
+const opened = await page.eval(() => {
+  const image = document.querySelector('#image-viewer-image');
+  const cardImage = document.querySelector('[data-id="alpha"] [data-card-image]');
+  const imageRect = image.getBoundingClientRect();
+  const cardRect = cardImage.getBoundingClientRect();
+  const dialog = document.querySelector('#image-dialog');
+  return {
+    open: dialog.open,
+    position: document.querySelector('#image-viewer-position').textContent,
+    active: document.activeElement.id,
+    substantiallyLarger: imageRect.width > cardRect.width * 1.5,
+    viewerFits: dialog.scrollWidth <= dialog.clientWidth,
+    previousName: document.querySelector('#image-viewer-previous').getAttribute('aria-label'),
+    nextName: document.querySelector('#image-viewer-next').getAttribute('aria-label'),
+  };
+});
+await page.press('ArrowRight');
+const keyboardPosition = await page.eval(() => document.querySelector('#image-viewer-position').textContent);
+await page.press('Escape');
+await page.wait(50);
+const escaped = await page.eval(() => {
+  const opener = document.querySelector('[data-id="alpha"] [data-open-image-viewer]');
+  const style = getComputedStyle(opener);
+  return {
+    closed: !document.querySelector('#image-dialog').open,
+    focusReturned: document.activeElement === opener,
+    focusVisible: opener.matches(':focus-visible') && parseFloat(style.outlineWidth) >= 3,
+  };
+});
+await page.eval(() => document.querySelector('[data-id="alpha"] [data-open-image-viewer]').focus());
+await page.press('Enter');
+const keyboardOpened = await page.eval(() => document.querySelector('#image-dialog').open);
+await page.press('Escape');
+await page.wait(30);
+await page.click('[data-id="gamma"] [data-open-image-viewer]');
+const oneImageViewer = await page.eval(() => ({
+  open: document.querySelector('#image-dialog').open,
+  navigationHidden: document.querySelector('#image-viewer-navigation').hidden,
+  context: document.querySelector('#image-viewer-context').textContent,
+}));
+await page.press('Escape');
+console.log(JSON.stringify({ initial, afterMouse, opened, keyboardPosition, escaped, keyboardOpened, oneImageViewer }));
+EOF
+)
+  printf '%s' "$desktop" | jq -e '
+    .initial == {
+      index:"0", position:"Image 1 of 2", source:"/asset/alpha/0",
+      pageFits:true, noImageTruthful:true, oneImageTruthful:true
+    }
+    and .afterMouse == {index:"1", position:"Image 2 of 2", source:"/asset/alpha/1"}
+    and .opened.open == true
+    and .opened.position == "Image 2 of 2"
+    and .opened.active == "image-viewer-close"
+    and .opened.substantiallyLarger == true
+    and .opened.viewerFits == true
+    and (.opened.previousName | startswith("Previous enlarged image"))
+    and (.opened.nextName | startswith("Next enlarged image"))
+    and .keyboardPosition == "Image 1 of 2"
+    and .escaped == {closed:true, focusReturned:true, focusVisible:true}
+    and .keyboardOpened == true
+    and .oneImageViewer.open == true
+    and .oneImageViewer.navigationHidden == true
+    and (.oneImageViewer.context | startswith("Image 1 of 1. Validated local"))
+  ' >/dev/null || fail "desktop gallery interactions failed: $desktop"
+
+  CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi emulate --viewport '390x844x3,mobile,touch' --color-scheme dark >/dev/null
+  touch=$(CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi run <<'EOF'
+await page.wait(300);
+const before = await page.eval(() => document.querySelector('[data-id="alpha"] [data-open-image-viewer]').dataset.imageIndex);
+await page.eval(() => {
+  document.querySelector('[data-card-image-next="alpha"]')
+    .dispatchEvent(new PointerEvent('click', { bubbles: true, pointerType: 'touch' }));
+});
+const after = await page.eval(() => document.querySelector('[data-id="alpha"] [data-open-image-viewer]').dataset.imageIndex);
+await page.eval(() => {
+  document.querySelector('[data-open-image-viewer="alpha"]')
+    .dispatchEvent(new PointerEvent('click', { bubbles: true, pointerType: 'touch' }));
+});
+await page.eval(() => {
+  document.querySelector('#image-viewer-next')
+    .dispatchEvent(new PointerEvent('click', { bubbles: true, pointerType: 'touch' }));
+});
+const result = await page.eval(() => {
+  const dialog = document.querySelector('#image-dialog');
+  const controls = [
+    document.querySelector('[data-card-image-next="alpha"]'),
+    document.querySelector('#image-viewer-previous'),
+    document.querySelector('#image-viewer-next'),
+  ];
+  return {
+    open: dialog.open,
+    position: document.querySelector('#image-viewer-position').textContent,
+    pageFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    viewerFits: dialog.scrollWidth <= dialog.clientWidth,
+    touchTargets: controls.every(control => control.getBoundingClientRect().height >= 44),
+  };
+});
+result.before = before;
+result.after = after;
+console.log(JSON.stringify(result));
+EOF
+)
+  printf '%s' "$touch" | jq -e '
+    .before == "0"
+    and .after == "1"
+    and .open == true
+    and .position == "Image 1 of 2"
+    and .pageFits == true
+    and .viewerFits == true
+    and .touchTargets == true
+  ' >/dev/null || fail "touch gallery interactions failed: $touch"
+
+  CHROME_DEVTOOLS_AXI_SESSION="$BROWSER_SESSION" chrome-devtools-axi stop >/dev/null
+  BROWSER_SESSION=''
+  pass 'gallery image browsing and enlarged viewing work with mouse, touch, keyboard, focus return, and responsive layouts'
 }
 
 test_init_and_help() {
@@ -453,6 +655,54 @@ test_html_escaping_and_deterministic_rendering() {
   pass 'deterministic gallery HTML escapes untrusted data and carries offline, rights, and accessibility affordances'
 }
 
+test_gallery_render_image_states_and_accessibility() {
+  local home lib none one multiple html one_hash thumb_hash reference_hash note_hash
+  home=$(new_home gallery-images)
+  lib=$(library_root "$home")
+  FM_HOME="$home" "$SCRIPT" init >/dev/null
+
+  printf 'one local image\n' >"$lib/assets/one.png"
+  printf 'multiple thumbnail image\n' >"$lib/assets/multiple-thumb.png"
+  printf 'multiple reference image\n' >"$lib/assets/multiple-reference.webp"
+  printf 'declared provenance that is not previewable\n' >"$lib/assets/multiple-not-preview.txt"
+  one_hash=$(shasum -a 256 "$lib/assets/one.png" | awk '{print $1}')
+  thumb_hash=$(shasum -a 256 "$lib/assets/multiple-thumb.png" | awk '{print $1}')
+  reference_hash=$(shasum -a 256 "$lib/assets/multiple-reference.webp" | awk '{print $1}')
+  note_hash=$(shasum -a 256 "$lib/assets/multiple-not-preview.txt" | awk '{print $1}')
+
+  none=$(reference_record none 'https://example.test/no-gallery-image')
+  one=$(reference_record one 'https://example.test/one-gallery-image')
+  one=$(printf '%s' "$one" | jq -c --arg hash "$one_hash" '.local_assets = [{path:"assets/one.png",role:"reference-copy",sha256:$hash,added_on:"2026-02-21"}]')
+  multiple=$(reference_record multiple 'https://example.test/multiple-gallery-images')
+  multiple=$(printf '%s' "$multiple" | jq -c --arg thumb "$thumb_hash" --arg reference "$reference_hash" --arg note "$note_hash" '.local_assets = [
+    {path:"assets/multiple-reference.webp",role:"reference-copy",sha256:$reference,added_on:"2026-02-21"},
+    {path:"assets/multiple-not-preview.txt",role:"reference-copy",sha256:$note,added_on:"2026-02-21"},
+    {path:"assets/multiple-thumb.png",role:"thumbnail",sha256:$thumb,added_on:"2026-02-21"}
+  ]')
+  write_records "$lib/manifest.json" "$none" "$one" "$multiple"
+  FM_HOME="$home" "$SCRIPT" validate >/dev/null
+  html=$(FM_HOME="$home" "$SCRIPT" gallery render)
+
+  assert_contains "$html" 'data-open-image-viewer="multiple"' 'multi-image concept omitted its enlarged-view activation'
+  assert_contains "$html" 'src="/asset/multiple/0"' 'multi-image concept did not start with its validated thumbnail'
+  assert_contains "$html" 'data-card-image-previous="multiple"' 'multi-image concept omitted its previous control'
+  assert_contains "$html" 'data-card-image-next="multiple"' 'multi-image concept omitted its next control'
+  assert_contains "$html" 'Image 1 of 2' 'multi-image concept did not truthfully count only previewable local assets'
+  assert_contains "$html" 'aria-label="View Title multiple image 1 of 2 larger"' 'enlarged-view activation omitted its image position and concept name'
+  assert_contains "$html" 'aria-haspopup="dialog" aria-controls="image-dialog"' 'enlarged-view activation omitted its dialog relationship'
+  assert_contains "$html" 'data-open-image-viewer="one"' 'one-image concept omitted enlarged viewing'
+  assert_contains "$html" '1 local image - activate the preview to inspect it larger.' 'one-image concept omitted its truthful usable state'
+  assert_not_contains "$html" 'data-card-image-previous="one"' 'one-image concept rendered a misleading previous control'
+  assert_contains "$html" 'No local image is cached. No external preview was loaded.' 'no-image concept implied that an external preview loaded'
+  assert_not_contains "$html" 'data-open-image-viewer="none"' 'no-image concept exposed an unusable enlarged viewer action'
+  assert_contains "$html" 'id="image-dialog" class="image-dialog" aria-labelledby="image-viewer-title" aria-describedby="image-viewer-context"' 'enlarged viewer omitted its accessible dialog naming'
+  assert_contains "$html" 'aria-label="Close enlarged image viewer"' 'enlarged viewer omitted an accessible close name'
+  assert_contains "$html" '>Previous image</button>' 'enlarged viewer omitted its previous control'
+  assert_contains "$html" '>Next image</button>' 'enlarged viewer omitted its next control'
+  assert_contains "$html" 'Inspiration only - no asset reuse rights' 'image gallery changed the recorded rights wording'
+  pass 'public gallery rendering distinguishes no-image, one-image, and browsable multi-image concepts accessibly'
+}
+
 test_read_commands_do_not_mutate_storage() {
   local home lib alpha before after outside
   home=$(new_home read-only)
@@ -567,18 +817,31 @@ test_gallery_runtime_confinement_and_identity() {
 }
 
 test_loopback_server_and_no_network_defaults() {
-  local home lib alpha beta port start status page library cross_host fetch_cross_site outside_host response headers prefs before
-  local interceptor intercept_log control_rc token brief_one brief_two brief_text brief_code malformed_code malformed_body quoted_emphasis preview_hash preview_body asset_code
+  local home lib alpha beta gamma port start status page library cross_host fetch_cross_site outside_host response headers prefs before
+  local interceptor intercept_log control_rc token brief_one brief_two brief_text brief_code malformed_code malformed_body quoted_emphasis
+  local preview_hash detail_hash note_hash gamma_hash asset_code
   local -a gallery_env
   home=$(new_home server)
   lib=$(library_root "$home")
   FM_HOME="$home" "$SCRIPT" init >/dev/null
   alpha=$(reference_record alpha 'https://example.invalid/must-not-fetch')
-  printf 'private preview bytes\n' >"$lib/assets/alpha.png"
+  write_test_png "$lib/assets/alpha.png" 28 106 93
+  write_test_png "$lib/assets/alpha-detail.png" 184 91 64
+  printf 'declared local provenance, not a preview image\n' >"$lib/assets/alpha-not-preview.txt"
+  write_test_png "$lib/assets/gamma.png" 73 78 138
   preview_hash=$(shasum -a 256 "$lib/assets/alpha.png" | awk '{print $1}')
-  alpha=$(printf '%s' "$alpha" | jq -c --arg hash "$preview_hash" '.emulate = ["**untrusted emphasis**"] | .local_assets = [{path:"assets/alpha.png",role:"thumbnail",sha256:$hash,added_on:"2026-02-21"}]')
+  detail_hash=$(shasum -a 256 "$lib/assets/alpha-detail.png" | awk '{print $1}')
+  note_hash=$(shasum -a 256 "$lib/assets/alpha-not-preview.txt" | awk '{print $1}')
+  gamma_hash=$(shasum -a 256 "$lib/assets/gamma.png" | awk '{print $1}')
+  alpha=$(printf '%s' "$alpha" | jq -c --arg preview "$preview_hash" --arg detail "$detail_hash" --arg note "$note_hash" '.emulate = ["**untrusted emphasis**"] | .local_assets = [
+    {path:"assets/alpha-detail.png",role:"reference-copy",sha256:$detail,added_on:"2026-02-21"},
+    {path:"assets/alpha-not-preview.txt",role:"reference-copy",sha256:$note,added_on:"2026-02-21"},
+    {path:"assets/alpha.png",role:"thumbnail",sha256:$preview,added_on:"2026-02-21"}
+  ]')
   beta=$(reference_record beta 'https://example.invalid/also-must-not-fetch')
-  write_records "$lib/manifest.json" "$beta" "$alpha"
+  gamma=$(reference_record gamma 'https://example.invalid/one-local-preview')
+  gamma=$(printf '%s' "$gamma" | jq -c --arg hash "$gamma_hash" '.local_assets = [{path:"assets/gamma.png",role:"reference-copy",sha256:$hash,added_on:"2026-02-21"}]')
+  write_records "$lib/manifest.json" "$beta" "$alpha" "$gamma"
 
   interceptor="$TMP_ROOT/outbound-interceptor.cjs"
   intercept_log="$TMP_ROOT/outbound-interceptor.log"
@@ -630,10 +893,31 @@ NODE
   assert_contains "$(cat "$headers")" 'Cross-Origin-Resource-Policy: same-origin' 'served gallery omitted its same-origin resource policy'
   library=$(curl -fsS "http://127.0.0.1:$port/api/library")
   assert_contains "$library" 'https://example.invalid/must-not-fetch' 'library API omitted canonical source provenance'
-  assert_contains "$library" '"preview_url":null' 'uncached source was not represented as a local placeholder state'
-  assert_contains "$library" '"preview_url":"/asset/alpha"' 'cached source did not expose its declared local preview'
-  preview_body=$(curl -fsS "http://127.0.0.1:$port/asset/alpha")
-  [ "$preview_body" = 'private preview bytes' ] || fail 'gallery did not serve the validated declared local preview'
+  printf '%s' "$library" | jq -e '
+    .schema == "firstmate.design-inspiration.gallery-api/v1"
+    and (.items[] | select(.id == "alpha") |
+      .preview_url == "/asset/alpha"
+      and (.local_assets | length) == 3
+      and (.preview_images | map(.url)) == ["/asset/alpha/0", "/asset/alpha/1"]
+      and (.preview_images | map(.role)) == ["thumbnail", "reference-copy"])
+    and (.items[] | select(.id == "beta") | .preview_url == null and .preview_images == [])
+    and (.items[] | select(.id == "gamma") |
+      .preview_url == "/asset/gamma"
+      and (.preview_images | map(.url)) == ["/asset/gamma/0"])
+  ' >/dev/null || fail 'gallery API did not expose truthful no-image, one-image, and multi-image projections from validated local_assets'
+  curl -fsS -o "$TMP_ROOT/legacy-preview.png" "http://127.0.0.1:$port/asset/alpha"
+  [ "$(shasum -a 256 "$TMP_ROOT/legacy-preview.png" | awk '{print $1}')" = "$preview_hash" ] \
+    || fail 'legacy gallery preview route did not serve the first validated local image'
+  curl -fsS -o "$TMP_ROOT/indexed-preview.png" "http://127.0.0.1:$port/asset/alpha/0"
+  [ "$(shasum -a 256 "$TMP_ROOT/indexed-preview.png" | awk '{print $1}')" = "$preview_hash" ] \
+    || fail 'indexed gallery route did not serve the validated thumbnail'
+  curl -fsS -o "$TMP_ROOT/indexed-detail.png" "http://127.0.0.1:$port/asset/alpha/1"
+  [ "$(shasum -a 256 "$TMP_ROOT/indexed-detail.png" | awk '{print $1}')" = "$detail_hash" ] \
+    || fail 'indexed gallery route did not serve the second validated previewable local asset'
+  asset_code=$(curl -sS -o "$TMP_ROOT/asset-not-found.json" -w '%{http_code}' "http://127.0.0.1:$port/asset/alpha/2")
+  [ "$asset_code" = 404 ] || fail "gallery exposed a non-previewable local asset as an image: HTTP $asset_code"
+  asset_code=$(curl -sS -o "$TMP_ROOT/asset-not-found.json" -w '%{http_code}' "http://127.0.0.1:$port/asset/beta/0")
+  [ "$asset_code" = 404 ] || fail "no-image concept exposed an asset route: HTTP $asset_code"
   token=$(printf '%s' "$library" | jq -r '.csrf_token')
 
   if curl -sS -o /dev/null -w '%{http_code}' -H 'Host: example.test' "http://127.0.0.1:$port/" | grep -qx 421; then :; else
@@ -641,8 +925,10 @@ NODE
   fi
   cross_host=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: https://example.test' "http://127.0.0.1:$port/api/library")
   [ "$cross_host" = 403 ] || fail "gallery did not reject a cross-origin request: HTTP $cross_host"
-  fetch_cross_site=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: cross-site' "http://127.0.0.1:$port/asset/alpha")
+  fetch_cross_site=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: cross-site' "http://127.0.0.1:$port/asset/alpha/1")
   [ "$fetch_cross_site" = 403 ] || fail "gallery did not reject a cross-site no-CORS asset probe: HTTP $fetch_cross_site"
+
+  test_browser_gallery_interactions "http://127.0.0.1:$port/"
 
   brief_one=$(curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Firstmate-Token: $token" \
     --data "$(jq -cn '{ids:["beta","alpha"],intent:"Clarify the account overview hierarchy.",guardrails:"Keep the existing product tokens."}')" \
@@ -690,10 +976,13 @@ NODE
   jq -e '.preferences[0].id == "beta" and .preferences[0].avoid == true' "$lib/preferences.json" >/dev/null \
     || fail 'gallery annotation was not persisted to the separate private preferences file'
 
-  printf 'tampered\n' >>"$lib/assets/alpha.png"
-  asset_code=$(curl -sS -o "$TMP_ROOT/asset-error.json" -w '%{http_code}' "http://127.0.0.1:$port/asset/alpha")
-  [ "$asset_code" = 400 ] || fail "gallery served a preview after its requested-file hash changed: HTTP $asset_code"
-  assert_grep 'SHA-256' "$TMP_ROOT/asset-error.json" 'changed preview rejection omitted the provenance hash mismatch'
+  printf 'tampered\n' >>"$lib/assets/alpha-detail.png"
+  asset_code=$(curl -sS -o "$TMP_ROOT/asset-error.json" -w '%{http_code}' "http://127.0.0.1:$port/asset/alpha/1")
+  [ "$asset_code" = 400 ] || fail "gallery served a secondary image after its requested-file hash changed: HTTP $asset_code"
+  assert_grep 'SHA-256' "$TMP_ROOT/asset-error.json" 'changed secondary image rejection omitted the provenance hash mismatch'
+  curl -fsS -o "$TMP_ROOT/untampered-preview.png" "http://127.0.0.1:$port/asset/alpha/0"
+  [ "$(shasum -a 256 "$TMP_ROOT/untampered-preview.png" | awk '{print $1}')" = "$preview_hash" ] \
+    || fail 'a changed secondary image prevented the server from verifying and serving the requested unchanged image'
 
   "${gallery_env[@]}" "$SCRIPT" gallery stop >/dev/null
   SERVER_HOME=''
@@ -711,6 +1000,7 @@ test_asset_paths_hashes_and_symlinks
 test_preferences_validation_and_deterministic_import_export
 test_search_citation_and_brief_output
 test_html_escaping_and_deterministic_rendering
+test_gallery_render_image_states_and_accessibility
 test_read_commands_do_not_mutate_storage
 test_gallery_runtime_confinement_and_identity
 test_loopback_server_and_no_network_defaults

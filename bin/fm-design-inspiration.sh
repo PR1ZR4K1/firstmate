@@ -106,8 +106,8 @@
 #   Runtime identity and logs remain below .gallery/ and are bound to the
 #   canonical private-library root for one home.
 #   The server has no account, external fetch, telemetry, publish, or share path.
-#   It serves only validated declared local preview files and truthful
-#   placeholders for everything else.
+#   It serves every validated declared previewable local image through a
+#   responsive gallery and truthful placeholders for everything else.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -186,7 +186,8 @@ Commands:
     A dash reads the document from stdin.
 
   gallery render
-    Print deterministic responsive gallery HTML with safely escaped private data.
+    Print deterministic responsive gallery HTML with safely escaped private data
+    and a larger browsable viewer for every validated previewable local image.
 
   gallery start
     Validate the library and start the no-account private gallery on the fixed
@@ -261,7 +262,8 @@ Preferences schema:
 Gallery safety:
   The server binds only to 127.0.0.1 and validates the Host and Origin boundaries.
   It has no publish, share, account, telemetry, external proxy, or external fetch.
-  It remains useful offline with local previews and truthful placeholders.
+  It remains useful offline with a browsable viewer for validated local images
+  and truthful placeholders when no previewable local image exists.
   It serves no undeclared path and refuses all symlinks and traversal.
   It escapes untrusted content and never presents reference-only rights as reuse.
   FM_DESIGN_GALLERY_PORT may set a fixed alternate loopback port from 1024 through

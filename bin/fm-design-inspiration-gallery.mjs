@@ -111,10 +111,13 @@ function readJsonRegular(file) {
   return readJson(file);
 }
 
-function previewAsset(item) {
-  const thumbnail = item.local_assets.find(asset => asset.role === 'thumbnail');
-  if (thumbnail) return thumbnail;
-  return item.local_assets.find(asset => PREVIEW_TYPES.has(path.extname(asset.path).toLowerCase())) || null;
+function previewAssets(item) {
+  return item.local_assets
+    .filter(asset => PREVIEW_TYPES.has(path.extname(asset.path).toLowerCase()))
+    .sort((left, right) => {
+      const roleOrder = Number(right.role === 'thumbnail') - Number(left.role === 'thumbnail');
+      return roleOrder || left.path.localeCompare(right.path, 'en');
+    });
 }
 
 function citationFor(item) {
@@ -155,17 +158,22 @@ function loadModel(home) {
   const items = [...manifest.items]
     .sort((left, right) => left.id.localeCompare(right.id, 'en'))
     .map(item => {
-      const preview = previewAsset(item);
-      return {
+      const normalized = {
         ...item,
         aesthetic_families: [...item.aesthetic_families].sort(),
         interface_types: [...item.interface_types].sort(),
         platforms: [...item.platforms].sort(),
         tags: [...item.tags].sort(),
         local_assets: [...item.local_assets].sort((left, right) => left.path.localeCompare(right.path, 'en')),
+      };
+      const previews = previewAssets(normalized);
+      const encodedId = encodeURIComponent(item.id);
+      return {
+        ...normalized,
         preference: preferences.get(item.id) || emptyPreference(item.id),
         citation: citationFor(item),
-        preview_url: preview ? `/asset/${encodeURIComponent(item.id)}` : null,
+        preview_images: previews.map((asset, index) => ({ ...asset, url: `/asset/${encodedId}/${index}` })),
+        preview_url: previews.length > 0 ? `/asset/${encodedId}` : null,
       };
     });
   return { paths, items };
@@ -262,9 +270,23 @@ function rightsText(item) {
 }
 
 function renderCard(item) {
-  const preview = item.preview_url
-    ? `<img src="${html(item.preview_url)}" alt="Local preview of ${html(item.title)}" loading="lazy">`
+  const imageCount = item.preview_images.length;
+  const preview = imageCount > 0
+    ? `<button class="preview-open" type="button" data-open-image-viewer="${html(item.id)}" data-image-index="0" aria-label="View ${html(item.title)} image 1 of ${imageCount} larger" aria-haspopup="dialog" aria-controls="image-dialog">
+        <img src="${html(item.preview_images[0].url)}" alt="Local preview of ${html(item.title)}, image 1 of ${imageCount}" loading="lazy" data-card-image>
+        <span class="preview-open-label" aria-hidden="true">View larger</span>
+      </button>`
     : '<div class="preview-placeholder" role="img" aria-label="No cached local preview">No cached local preview</div>';
+  const imageNavigation = imageCount > 1
+    ? `<div class="preview-navigation" role="group" aria-label="Browse local images for ${html(item.title)}">
+        <button type="button" data-card-image-previous="${html(item.id)}" aria-label="Previous local image for ${html(item.title)}">Previous</button>
+        <span data-card-image-position aria-live="polite">Image 1 of ${imageCount}</span>
+        <button type="button" data-card-image-next="${html(item.id)}" aria-label="Next local image for ${html(item.title)}">Next</button>
+      </div>`
+    : '';
+  const imageHint = imageCount > 0
+    ? `${imageCount === 1 ? '1 local image' : `${imageCount} local images`} - activate the preview to inspect it larger.`
+    : 'No local image is cached. No external preview was loaded.';
   const tags = [...item.aesthetic_families, ...item.interface_types, ...item.platforms, ...item.tags]
     .map(tag => `<span class="tag">${html(tag)}</span>`)
     .join('');
@@ -277,7 +299,11 @@ function renderCard(item) {
     ? `Select ${item.id} for a design brief`
     : `${item.id} must be captain-approved before it can enter a design brief`;
   return `<article class="reference-card" tabindex="0" data-id="${html(item.id)}" data-kind="${html(item.kind)}" data-health="${html(item.source_health)}" data-aesthetic="${html(item.aesthetic_families.join(' '))}" data-interface="${html(item.interface_types.join(' '))}" data-platform="${html(item.platforms.join(' '))}" data-tags="${html(item.tags.join(' '))}">
-  <div class="preview">${preview}</div>
+  <div class="card-gallery" data-card-gallery="${html(item.id)}">
+    <div class="preview">${preview}</div>
+    ${imageNavigation}
+    <p class="preview-hint" data-card-image-hint>${html(imageHint)}</p>
+  </div>
   <div class="card-body">
     <div class="card-id-row"><code class="reference-id">${html(item.id)}</code>${badges}</div>
     <h2>${html(item.title)}</h2>
@@ -362,6 +388,27 @@ ${cards}
   </section>
 </main>
 
+<dialog id="image-dialog" class="image-dialog" aria-labelledby="image-viewer-title" aria-describedby="image-viewer-context" aria-modal="true">
+  <div class="image-viewer">
+    <header class="image-viewer-header">
+      <div>
+        <p class="eyebrow">Validated local image</p>
+        <h2 id="image-viewer-title">Local image viewer</h2>
+      </div>
+      <form method="dialog" class="dialog-close"><button id="image-viewer-close" type="submit" aria-label="Close enlarged image viewer">Close</button></form>
+    </header>
+    <div class="image-viewer-stage">
+      <img id="image-viewer-image" alt="" hidden>
+    </div>
+    <div id="image-viewer-navigation" class="image-viewer-navigation" role="group" aria-label="Browse enlarged local images" hidden>
+      <button id="image-viewer-previous" type="button">Previous image</button>
+      <p id="image-viewer-position" aria-live="polite"></p>
+      <button id="image-viewer-next" type="button">Next image</button>
+    </div>
+    <p id="image-viewer-context" class="image-viewer-context"></p>
+  </div>
+</dialog>
+
 <dialog id="detail-dialog" aria-labelledby="detail-title">
   <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close reference details">Close</button></form>
   <div id="detail-content"></div>
@@ -426,9 +473,18 @@ main { width: min(100%, 96rem); margin-inline: auto; padding: clamp(1rem, 3vw, 2
 .gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: 1rem; align-items: start; }
 .reference-card { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface); box-shadow: 0 .25rem 1rem rgb(0 0 0 / .08); }
 .reference-card[hidden] { display: none; }
-.preview { aspect-ratio: 16 / 10; background: #dfe4de; overflow: hidden; }
+.card-gallery { border-bottom: 1px solid var(--line); }
+.preview { position: relative; aspect-ratio: 16 / 10; background: #dfe4de; overflow: hidden; }
 .preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.preview-open { position: relative; display: block; width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; border: 0; border-radius: 0; background: transparent; color: #fff; }
+.preview-open:focus-visible { outline: 4px solid #f29a3f; outline-offset: -4px; }
+.preview-open-label { position: absolute; right: .65rem; bottom: .65rem; padding: .35rem .55rem; border: 1px solid rgb(255 255 255 / .65); border-radius: 999px; background: rgb(16 45 41 / .9); color: #fff; font-size: .78rem; font-weight: 750; }
 .preview-placeholder { display: grid; place-items: center; width: 100%; height: 100%; padding: 1rem; color: #3d4945; background: repeating-linear-gradient(135deg, #e6e9e4, #e6e9e4 1rem, #dce1db 1rem, #dce1db 2rem); text-align: center; }
+.preview-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: .55rem; align-items: center; padding: .65rem .75rem 0; }
+.preview-navigation button { min-height: 2.75rem; padding-inline: .55rem; }
+.preview-navigation button:last-child { justify-self: stretch; }
+.preview-navigation [data-card-image-position] { text-align: center; font-size: .82rem; font-weight: 750; }
+.preview-hint { margin: 0; padding: .6rem .8rem .75rem; color: var(--muted); font-size: .82rem; text-align: center; overflow-wrap: anywhere; }
 .card-body { display: grid; gap: .65rem; padding: 1rem; }
 .card-body h2, .card-body p { margin: 0; overflow-wrap: anywhere; }
 .card-id-row { display: flex; flex-wrap: wrap; gap: .4rem; justify-content: space-between; align-items: center; }
@@ -447,7 +503,19 @@ main { width: min(100%, 96rem); margin-inline: auto; padding: clamp(1rem, 3vw, 2
 .brief-builder { display: grid; gap: 1rem; }
 dialog { width: min(calc(100% - 2rem), 54rem); max-height: calc(100% - 2rem); overflow: auto; border: 1px solid var(--line); border-radius: .8rem; background: var(--surface); color: var(--ink); }
 dialog::backdrop { background: rgb(0 0 0 / .62); }
-.dialog-close { display: flex; justify-content: flex-end; }
+.dialog-close { display: flex; justify-content: flex-end; margin: 0; }
+.image-dialog { width: min(calc(100% - 1rem), 92rem); max-width: none; max-height: calc(100dvh - 1rem); padding: clamp(.75rem, 2vw, 1.25rem); overflow: auto; }
+.image-viewer { display: grid; gap: .8rem; min-width: 0; }
+.image-viewer-header { display: flex; gap: 1rem; align-items: start; justify-content: space-between; }
+.image-viewer-header .eyebrow { margin-bottom: .25rem; color: var(--muted); }
+.image-viewer-header h2 { margin: 0; overflow-wrap: anywhere; }
+.image-viewer-header button, .image-viewer-navigation button { min-height: 2.75rem; }
+.image-viewer-stage { position: relative; min-width: 0; min-height: 12rem; height: min(65dvh, 52rem); overflow: hidden; border-radius: .6rem; background: #0d1613; }
+.image-viewer-stage img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+.image-viewer-navigation { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: .75rem; align-items: center; }
+.image-viewer-navigation p { margin: 0; text-align: center; font-weight: 750; }
+.image-viewer-navigation button:last-child { justify-self: stretch; }
+.image-viewer-context { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .detail-grid { display: grid; gap: 1rem; }
 .detail-section { border-top: 1px solid var(--line); padding-top: .8rem; }
 .detail-section ul { padding-left: 1.3rem; }
@@ -462,6 +530,8 @@ dialog::backdrop { background: rgb(0 0 0 / .62); }
 @media (max-width: 48rem) {
   .site-header { grid-template-columns: 1fr; }
   .site-header h1 { line-height: 1.05; }
+  .preview-navigation, .image-viewer-navigation { gap: .4rem; }
+  .image-viewer-stage { height: min(58dvh, 38rem); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -545,8 +615,8 @@ function isEmptyPreference(preference) {
     && Object.values(preference.ratings || {}).every(value => value === null);
 }
 
-function readPreview(model, item) {
-  const preview = previewAsset(item);
+function readPreview(model, item, index = 0) {
+  const preview = previewAssets(item)[index];
   if (!preview) return null;
   const candidate = path.join(model.paths.root, preview.path);
   const real = fs.realpathSync(candidate);
@@ -712,14 +782,26 @@ function serveCommand(options) {
         return;
       }
       if (request.method === 'GET' && url.pathname.startsWith('/asset/')) {
-        const id = decodeURIComponent(url.pathname.slice('/asset/'.length));
-        if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id)) {
+        const match = url.pathname.match(/^\/asset\/([^/]+)(?:\/([0-9]+))?$/);
+        if (!match) {
+          jsonResponse(response, 404, { error: 'asset not found' });
+          return;
+        }
+        let id;
+        try {
+          id = decodeURIComponent(match[1]);
+        } catch {
+          jsonResponse(response, 404, { error: 'asset not found' });
+          return;
+        }
+        const index = match[2] === undefined ? 0 : Number(match[2]);
+        if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id) || !Number.isSafeInteger(index)) {
           jsonResponse(response, 404, { error: 'asset not found' });
           return;
         }
         const model = currentModel(false);
         const item = model.items.find(candidate => candidate.id === id);
-        const preview = item ? readPreview(model, item) : null;
+        const preview = item ? readPreview(model, item, index) : null;
         if (!preview) {
           jsonResponse(response, 404, { error: 'asset not found' });
           return;
