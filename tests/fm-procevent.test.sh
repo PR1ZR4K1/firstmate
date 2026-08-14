@@ -478,16 +478,16 @@ pass "failed terminal retirement is fail-closed and idempotently recoverable"
 # the runner, capture, publication, and retirement all run for real.
 HLT="$TMP_ROOT/hlt"; new_home "$HLT"
 LAVISH_BIN=$(fm_fakebin "$TMP_ROOT/lavish-stub")
-LAVISH_POLL_COUNT="$TMP_ROOT/lavish-poll-count"
-export LAVISH_POLL_COUNT
+LAVISH_POLL_COUNT="$LAVISH_BIN/poll-count"
 cat > "$LAVISH_BIN/lavish-axi" <<'SH'
 #!/usr/bin/env bash
 # Stand-in for `lavish-axi poll <file>` around a human `Send & End`: the final
 # feedback is delivered exactly once carrying session_ended, and every later
 # poll returns an empty ended session immediately.
-n=$(cat "$LAVISH_POLL_COUNT" 2>/dev/null || echo 0)
+count_file="$(dirname "$0")/poll-count"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
 n=$((n + 1))
-printf '%s\n' "$n" > "$LAVISH_POLL_COUNT"
+printf '%s\n' "$n" > "$count_file"
 if [ "$n" = 1 ]; then
   printf 'session:\n  file: /review.html\n  status: feedback\n  session_ended: true\n  ended_by: user\nfeedback[1]{text}:\n  ship it\n'
 else
@@ -526,16 +526,17 @@ pass "one Send & End yields exactly one captured result, automatic retirement, a
 # agent response that was never sent.
 HLF="$TMP_ROOT/hlf"; new_home "$HLF"
 LAVISH_REPLY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-reply-stub")
-LAVISH_REPLY_COUNT="$TMP_ROOT/lavish-reply-count"
-LAVISH_REPLY_LOG="$TMP_ROOT/lavish-reply-argv"
-export LAVISH_REPLY_COUNT LAVISH_REPLY_LOG
+LAVISH_REPLY_COUNT="$LAVISH_REPLY_BIN/reply-count"
+LAVISH_REPLY_LOG="$LAVISH_REPLY_BIN/reply-argv"
 cat > "$LAVISH_REPLY_BIN/lavish-axi" <<'SH'
 #!/usr/bin/env bash
-n=$(cat "$LAVISH_REPLY_COUNT" 2>/dev/null || echo 0)
+count_file="$(dirname "$0")/reply-count"
+log_file="$(dirname "$0")/reply-argv"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
 n=$((n + 1))
-printf '%s\n' "$n" > "$LAVISH_REPLY_COUNT"
-printf -- 'call=%s\n' "$n" >> "$LAVISH_REPLY_LOG"
-for arg in "$@"; do printf '<%s>\n' "$arg" >> "$LAVISH_REPLY_LOG"; done
+printf '%s\n' "$n" > "$count_file"
+printf -- 'call=%s\n' "$n" >> "$log_file"
+for arg in "$@"; do printf '<%s>\n' "$arg" >> "$log_file"; done
 if [ "$n" = 1 ]; then
   printf 'session:\n  file: /review.html\n  status: feedback\nprompts[1]{text}:\n  choose sample A\n'
 else
@@ -563,10 +564,20 @@ for _ in $(seq 1 60); do
 done
 assert_absent "$HLF/state/procevent/$reply_id.source" \
   "ordinary feedback left a plain poll registration armed before handler work"
+assert_absent "$HLF/state/procevent-inbox/$reply_id.1.handled" \
+  "feedback was acknowledged before its revision and reply continuation were ready"
 
-PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HLF" \
+reply_arm_out=$(PATH="$LAVISH_REPLY_BIN:$PATH" FM_HOME="$HLF" \
   "$ROOT/bin/fm-procevent-lavish.sh" arm "$REPLY_ART" \
-  --agent-reply "Applied the sample choice." >/dev/null
+  --after-sequence 1 --agent-reply "Applied the sample choice.")
+assert_contains "$reply_arm_out" "handled: $reply_id 1" \
+  "sequence-keyed arm did not atomically acknowledge the revised feedback"
+assert_present "$HLF/state/procevent-inbox/$reply_id.1.handled" \
+  "reply continuation publication left its source feedback unacknowledged"
+assert_no_grep 'Applied the sample choice.' "$HLF/state/procevent/$reply_id.source" \
+  "retryable source argv stored the agent reply"
+assert_grep '_poll' "$HLF/state/procevent/$reply_id.source" \
+  "Lavish continuation did not route through the adapter-owned receipt command"
 PATH="$LAVISH_REPLY_BIN:$PATH" pe "$HLF" reconcile >/dev/null
 for _ in $(seq 1 60); do
   [ "$(count_results "$HLF" "$reply_id")" -ge 2 ] && break
@@ -580,7 +591,260 @@ assert_grep '<Applied the sample choice.>' "$LAVISH_REPLY_LOG" "Lavish continuat
 assert_no_grep '<share>' "$LAVISH_REPLY_LOG" "Lavish callback must never publish or share"
 [ "$(cat "$LAVISH_REPLY_COUNT")" = 2 ] \
   || fail "explicit continuation ran an unexpected number of polls: $(cat "$LAVISH_REPLY_COUNT")"
-pass "ordinary feedback stops before handler work and resumes only through the approved callback with agent reply"
+assert_present "$HLF/state/lavish-continuations/$reply_id.1.delivered" \
+  "successful continuation did not retain its sequence-keyed delivery receipt"
+reply_receipt_mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
+  '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" \
+  "$HLF/state/lavish-continuations/$reply_id.1.delivered")
+assert_contains "$reply_receipt_mode" 600 "Lavish reply receipt is not owner-only"
+pass "ordinary feedback stops before handler work and resumes through a sequence-keyed reply receipt"
+
+# Reproduce the registration-before-acknowledgement crash cut directly from its
+# durable records. The continuation command must wait without touching Lavish,
+# while repeating the same public arm commits handling and releases it exactly
+# once instead of losing the continuation after the prior result was drained.
+HARM="$TMP_ROOT/harm-cut"; new_home "$HARM"
+LAVISH_ARM_BIN=$(fm_fakebin "$TMP_ROOT/lavish-arm-cut-stub")
+LAVISH_ARM_COUNT="$LAVISH_ARM_BIN/arm-count"
+cat > "$LAVISH_ARM_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+count_file="$(dirname "$0")/arm-count"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: agent\n'
+SH
+chmod +x "$LAVISH_ARM_BIN/lavish-axi"
+FM_HOME="$HARM" "$ROOT/bin/fm-lavish-review.sh" prepare "$HARM" arm-cut >/dev/null
+ARM_ART="$HARM/.lavish/arm-cut/review.html"
+printf '<h1>arm cut</h1>\n' > "$ARM_ART"
+arm_id=$(FM_HOME="$HARM" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$ARM_ART")
+PE_TRACKED+=("$HARM|$arm_id")
+mkdir -p "$HARM/state/procevent-inbox" "$HARM/state/lavish-continuations"
+printf 'session:\n  file: /review.html\n  status: feedback\n' \
+  > "$HARM/state/procevent-inbox/$arm_id.1.result"
+printf 'lavish\n' > "$HARM/state/procevent-inbox/$arm_id.1.adapter"
+printf '%s\n%s\n' "$ARM_ART" 'Resume after durable cut.' \
+  > "$HARM/state/lavish-continuations/$arm_id.1.ready"
+chmod 0600 "$HARM/state/procevent-inbox/$arm_id.1.result" \
+  "$HARM/state/procevent-inbox/$arm_id.1.adapter" \
+  "$HARM/state/lavish-continuations/$arm_id.1.ready"
+FM_HOME="$HARM" "$ROOT/bin/fm-procevent.sh" register lavish "$arm_id" -- \
+  "$ROOT/bin/fm-procevent-lavish.sh" _poll "$ARM_ART" "$arm_id" 1 >/dev/null
+PATH="$LAVISH_ARM_BIN:$PATH" pe "$HARM" reconcile >/dev/null
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/$arm_id.claim" || fail "partial arm registration never started its waiting command"
+sleep 0.3
+assert_absent "$LAVISH_ARM_COUNT" \
+  "partial arm invoked Lavish before its source result was durably handled"
+arm_cut_out=$(PATH="$LAVISH_ARM_BIN:$PATH" FM_HOME="$HARM" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$ARM_ART" \
+  --after-sequence 1 --agent-reply 'Resume after durable cut.')
+assert_contains "$arm_cut_out" "handled: $arm_id 1" \
+  "idempotent arm recovery did not commit the missing acknowledgement"
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HARM" "$arm_id")" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(cat "$LAVISH_ARM_COUNT")" = 1 ] \
+  || fail "recovered arm cut did not invoke exactly one continuation poll"
+assert_present "$HARM/state/lavish-continuations/$arm_id.1.delivered" \
+  "recovered arm cut did not commit its delivered receipt"
+pass "a registration-before-acknowledgement cut remains re-announceable and resumes once"
+
+# A large DOM snapshot precedes prompts in Lavish 0.1.50 output. The adapter must
+# bound that nonessential field before the generic capture bound while retaining
+# a complete decision payload even when that payload itself exceeds 1 MiB.
+HBIG="$TMP_ROOT/hbig"; new_home "$HBIG"
+LAVISH_BIG_BIN=$(fm_fakebin "$TMP_ROOT/lavish-big-stub")
+cat > "$LAVISH_BIG_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+printf 'session:\n  file: /review.html\n  status: feedback\n'
+perl -e 'print "dom_snapshot: ", "d" x 1200000, "\n"'
+printf 'prompts[1]{text}:\n  '
+perl -e 'print "p" x 1200000, " decision-tail\n"'
+printf 'next_step: apply the complete keyed decision\n'
+SH
+chmod +x "$LAVISH_BIG_BIN/lavish-axi"
+FM_HOME="$HBIG" "$ROOT/bin/fm-lavish-review.sh" prepare "$HBIG" oversized-feedback >/dev/null
+BIG_ART="$HBIG/.lavish/oversized-feedback/review.html"
+printf '<h1>oversized feedback</h1>\n' > "$BIG_ART"
+big_id=$(FM_HOME="$HBIG" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$BIG_ART")
+PE_TRACKED+=("$HBIG|$big_id")
+PATH="$LAVISH_BIG_BIN:$PATH" FM_HOME="$HBIG" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$BIG_ART" >/dev/null
+PATH="$LAVISH_BIG_BIN:$PATH" pe "$HBIG" reconcile >/dev/null
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HBIG" "$big_id")" -ge 1 ] && break
+  sleep 0.1
+done
+BIG_RESULT=$(first_result "$HBIG" "$big_id" || true)
+[ -n "$BIG_RESULT" ] || fail "oversized Lavish feedback was not captured"
+[ "$(wc -c < "$BIG_RESULT" | tr -d ' ')" -gt 1048576 ] \
+  || fail "complete oversized prompt data was not retained"
+assert_grep 'dom_snapshot: "[omitted by Firstmate; 1200000 encoded bytes]"' "$BIG_RESULT" \
+  "oversized DOM data was not bounded independently"
+assert_grep 'decision-tail' "$BIG_RESULT" \
+  "the decision tail after an oversized DOM snapshot was truncated"
+assert_grep 'next_step: apply the complete keyed decision' "$BIG_RESULT" \
+  "fields after the complete oversized prompt were lost"
+assert_contains "$(FM_HOME="$HBIG" "$ROOT/bin/fm-procevent-lavish.sh" classify "$BIG_RESULT")" feedback \
+  "normalized oversized feedback no longer classified as feedback"
+pass "oversized DOM data is bounded before complete prompt and decision capture"
+
+# The interruption cut after a reply is claimed must never replay that reply.
+# A replacement runner emits one ambiguous result, and inspected delivered
+# recovery continues with a plain poll that cannot repost the reply.
+HREPLAY="$TMP_ROOT/hreplay"; new_home "$HREPLAY"
+LAVISH_REPLAY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-replay-stub")
+LAVISH_REPLAY_COUNT="$LAVISH_REPLAY_BIN/replay-count"
+LAVISH_REPLAY_LOG="$LAVISH_REPLAY_BIN/replay-argv"
+LAVISH_REPLAY_STARTED="$LAVISH_REPLAY_BIN/reply-started"
+cat > "$LAVISH_REPLAY_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+root=$(dirname "$0")
+count_file="$root/replay-count"
+log_file="$root/replay-argv"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+printf 'call=%s\n' "$n" >> "$log_file"
+for arg in "$@"; do printf '<%s>\n' "$arg" >> "$log_file"; done
+if [ "$n" = 1 ]; then
+  printf 'started\n' > "$root/reply-started"
+  sleep 30
+else
+  printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: agent\n'
+fi
+SH
+chmod +x "$LAVISH_REPLAY_BIN/lavish-axi"
+FM_HOME="$HREPLAY" "$ROOT/bin/fm-lavish-review.sh" prepare "$HREPLAY" replay-cut >/dev/null
+REPLAY_ART="$HREPLAY/.lavish/replay-cut/review.html"
+printf '<h1>reply replay cut</h1>\n' > "$REPLAY_ART"
+replay_id=$(FM_HOME="$HREPLAY" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$REPLAY_ART")
+PE_TRACKED+=("$HREPLAY|$replay_id")
+mkdir -p "$HREPLAY/state/procevent-inbox"
+printf 'session:\n  file: /review.html\n  status: feedback\nprompts[1]{text}:\n  first choice\n' \
+  > "$HREPLAY/state/procevent-inbox/$replay_id.1.result"
+printf 'lavish\n' > "$HREPLAY/state/procevent-inbox/$replay_id.1.adapter"
+chmod 0600 "$HREPLAY/state/procevent-inbox/$replay_id.1.result" \
+  "$HREPLAY/state/procevent-inbox/$replay_id.1.adapter"
+pe "$HREPLAY" handled "$replay_id" 1 >/dev/null
+PATH="$LAVISH_REPLAY_BIN:$PATH" FM_HOME="$HREPLAY" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$REPLAY_ART" \
+  --after-sequence 1 --agent-reply "Applied replay-safe choice." >/dev/null
+assert_no_grep 'Applied replay-safe choice.' "$HREPLAY/state/procevent/$replay_id.source" \
+  "reply content leaked into retryable continuation argv"
+PATH="$LAVISH_REPLAY_BIN:$PATH" pe "$HREPLAY" reconcile >/dev/null
+wait_for "$LAVISH_REPLAY_STARTED" || fail "reply interruption fixture never began delivery"
+wait_for "$FM_PROCEVENT_CLAIM_ROOT/$replay_id.claim" || fail "reply interruption fixture never claimed its source"
+replay_leader=$(sed -n '2p' "$FM_PROCEVENT_CLAIM_ROOT/$replay_id.claim")
+case "$replay_leader" in ''|*[!0-9]*) fail "reply interruption fixture has no runner leader" ;; esac
+kill -KILL -"$replay_leader" 2>/dev/null || fail "could not interrupt the claimed reply generation"
+for _ in $(seq 1 50); do kill -0 -"$replay_leader" 2>/dev/null || break; sleep 0.1; done
+kill -0 -"$replay_leader" 2>/dev/null && fail "interrupted reply generation remained live"
+PATH="$LAVISH_REPLAY_BIN:$PATH" pe "$HREPLAY" reconcile >/dev/null
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HREPLAY" "$replay_id")" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(cat "$LAVISH_REPLAY_COUNT")" = 1 ] \
+  || fail "interruption replayed the claimed reply: $(cat "$LAVISH_REPLAY_COUNT") calls"
+REPLAY_AMBIGUOUS="$HREPLAY/state/procevent-inbox/$replay_id.2.result"
+assert_present "$REPLAY_AMBIGUOUS" "interrupted reply did not surface a durable ambiguity"
+assert_contains "$(FM_HOME="$HREPLAY" "$ROOT/bin/fm-procevent-lavish.sh" classify "$REPLAY_AMBIGUOUS")" ambiguous \
+  "interrupted claimed reply did not classify as ambiguous"
+for _ in $(seq 1 60); do
+  [ ! -e "$HREPLAY/state/procevent/$replay_id.source" ] && break
+  sleep 0.1
+done
+assert_absent "$HREPLAY/state/procevent/$replay_id.source" \
+  "ambiguous continuation remained armed for automatic replay"
+replay_recover_out=$(PATH="$LAVISH_REPLAY_BIN:$PATH" FM_HOME="$HREPLAY" \
+  "$ROOT/bin/fm-procevent-lavish.sh" recover "$REPLAY_ART" \
+  --after-sequence 1 --delivery delivered)
+assert_contains "$replay_recover_out" "acknowledge_ambiguity_sequence: 2" \
+  "delivered recovery did not retain the ambiguity acknowledgement handoff"
+pe "$HREPLAY" handled "$replay_id" 2 >/dev/null
+PATH="$LAVISH_REPLAY_BIN:$PATH" pe "$HREPLAY" reconcile >/dev/null
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HREPLAY" "$replay_id")" -ge 3 ] && break
+  sleep 0.1
+done
+[ "$(cat "$LAVISH_REPLAY_COUNT")" = 2 ] \
+  || fail "delivered recovery ran an unexpected number of polls"
+[ "$(grep -F -c '<--agent-reply>' "$LAVISH_REPLAY_LOG" || true)" = 1 ] \
+  || fail "delivered recovery reposted the agent reply"
+assert_present "$HREPLAY/state/lavish-continuations/$replay_id.1.delivered" \
+  "delivered recovery did not preserve its durable sequence receipt"
+pass "an interrupted claimed reply surfaces ambiguity and never replays automatically"
+
+# The opposite inspected outcome also stays explicit: not-delivered recovery
+# releases exactly the claimed sequence for one adapter-owned retry.
+HRETRY="$TMP_ROOT/hretry"; new_home "$HRETRY"
+LAVISH_RETRY_BIN=$(fm_fakebin "$TMP_ROOT/lavish-retry-stub")
+LAVISH_RETRY_COUNT="$LAVISH_RETRY_BIN/retry-count"
+LAVISH_RETRY_LOG="$LAVISH_RETRY_BIN/retry-argv"
+cat > "$LAVISH_RETRY_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+root=$(dirname "$0")
+count_file="$root/retry-count"
+log_file="$root/retry-argv"
+n=$(cat "$count_file" 2>/dev/null || echo 0)
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+printf 'call=%s\n' "$n" >> "$log_file"
+for arg in "$@"; do printf '<%s>\n' "$arg" >> "$log_file"; done
+if [ "$n" = 1 ]; then
+  exit 7
+fi
+printf 'session:\n  file: /review.html\n  status: ended\n  ended_by: agent\n'
+SH
+chmod +x "$LAVISH_RETRY_BIN/lavish-axi"
+FM_HOME="$HRETRY" "$ROOT/bin/fm-lavish-review.sh" prepare "$HRETRY" explicit-retry >/dev/null
+RETRY_ART="$HRETRY/.lavish/explicit-retry/review.html"
+printf '<h1>explicit retry</h1>\n' > "$RETRY_ART"
+retry_id=$(FM_HOME="$HRETRY" "$ROOT/bin/fm-procevent-lavish.sh" source-id "$RETRY_ART")
+PE_TRACKED+=("$HRETRY|$retry_id")
+mkdir -p "$HRETRY/state/procevent-inbox"
+printf 'session:\n  file: /review.html\n  status: feedback\n' \
+  > "$HRETRY/state/procevent-inbox/$retry_id.1.result"
+printf 'lavish\n' > "$HRETRY/state/procevent-inbox/$retry_id.1.adapter"
+chmod 0600 "$HRETRY/state/procevent-inbox/$retry_id.1.result" \
+  "$HRETRY/state/procevent-inbox/$retry_id.1.adapter"
+pe "$HRETRY" handled "$retry_id" 1 >/dev/null
+PATH="$LAVISH_RETRY_BIN:$PATH" FM_HOME="$HRETRY" \
+  "$ROOT/bin/fm-procevent-lavish.sh" arm "$RETRY_ART" \
+  --after-sequence 1 --agent-reply "Retry only after inspection." >/dev/null
+PATH="$LAVISH_RETRY_BIN:$PATH" pe "$HRETRY" reconcile >/dev/null
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HRETRY" "$retry_id")" -ge 2 ] && break
+  sleep 0.1
+done
+[ "$(cat "$LAVISH_RETRY_COUNT")" = 1 ] || fail "failed reply was replayed before explicit recovery"
+RETRY_AMBIGUOUS="$HRETRY/state/procevent-inbox/$retry_id.2.result"
+assert_contains "$(FM_HOME="$HRETRY" "$ROOT/bin/fm-procevent-lavish.sh" classify "$RETRY_AMBIGUOUS")" ambiguous \
+  "failed reply did not surface ambiguous delivery"
+for _ in $(seq 1 60); do
+  [ ! -e "$HRETRY/state/procevent/$retry_id.source" ] && break
+  sleep 0.1
+done
+assert_absent "$HRETRY/state/procevent/$retry_id.source" \
+  "failed reply ambiguity remained armed before inspected recovery"
+retry_recover_out=$(PATH="$LAVISH_RETRY_BIN:$PATH" FM_HOME="$HRETRY" \
+  "$ROOT/bin/fm-procevent-lavish.sh" recover "$RETRY_ART" \
+  --after-sequence 1 --delivery not-delivered)
+assert_contains "$retry_recover_out" "acknowledge_ambiguity_sequence: 2" \
+  "not-delivered recovery did not retain the ambiguity acknowledgement handoff"
+pe "$HRETRY" handled "$retry_id" 2 >/dev/null
+PATH="$LAVISH_RETRY_BIN:$PATH" pe "$HRETRY" reconcile >/dev/null
+for _ in $(seq 1 100); do
+  [ "$(count_results "$HRETRY" "$retry_id")" -ge 3 ] && break
+  sleep 0.1
+done
+[ "$(cat "$LAVISH_RETRY_COUNT")" = 2 ] || fail "inspected not-delivered recovery did not run exactly one retry"
+[ "$(grep -F -c '<--agent-reply>' "$LAVISH_RETRY_LOG" || true)" = 2 ] \
+  || fail "not-delivered recovery did not preserve the exact reply on its one retry"
+pass "inspected not-delivered recovery releases exactly one explicit reply retry"
 
 # --- end-user-aligned regression: the exact drain-before-handling restart cut
 # Reproduces the confirmed defect through the public interface end to end: a
@@ -1120,9 +1384,12 @@ printf 'session:\n  file: /a.html\n  status: ended\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" ended "an ended session classifies as ended"
 printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" missing "an explicit missing session classifies as missing"
+printf 'continuation:\n  status: ambiguous\n  source_sequence: 4\n  reason: reply-delivery-already-claimed\nsession:\n  status: feedback\nprompts[1]{text}:\n  retained decision\n' > "$CLS"
+assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" ambiguous \
+  "a claimed reply cut takes precedence over appended retained feedback"
 printf 'garbage that is not a session block\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" unknown "malformed output classifies as unknown rather than a lifecycle state"
-pass "the adapter classifies published poll output safely"
+pass "the adapter classifies feedback and ambiguous continuation results safely"
 
 # The adapter, not the runner, decides which results stop a Lavish registration.
 # Every completed feedback poll retires before handler work so a plain automatic
@@ -1142,6 +1409,9 @@ printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n'
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" || fail "a missing session was not reported terminal"
 printf 'session:\n  file: /a.html\n  status: waiting\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "a waiting session was reported terminal"
+printf 'continuation:\n  status: ambiguous\n  source_sequence: 9\n  reason: reply-delivery-not-confirmed\n' > "$TRM"
+"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
+  || fail "an ambiguous reply delivery remained armed for automatic replay"
 printf 'garbage that is not a session block\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "an unreadable result was reported terminal"
 printf 'session:\n  file: /a.html\n  status: waiting\nfeedback[1]{text}:\n  session_ended: true\n' > "$TRM"
@@ -1157,11 +1427,13 @@ assert_contains "$adapter_help" "destructively clears" \
   "the adapter's help states the destructive-source loss limitation"
 assert_contains "$adapter_help" "Never describe" \
   "the adapter's help forbids an at-least-once or lossless description"
-assert_contains "$adapter_help" "current poll registration retires before handler work" \
-  "the adapter's help states the handler-mediated re-arm boundary"
+assert_contains "$adapter_help" "never replays a claimed reply" \
+  "the adapter's help states the sequence-keyed reply boundary"
+assert_contains "$adapter_help" "surfaced as ambiguous" \
+  "the adapter's help states the interrupted-delivery recovery boundary"
 # shellcheck disable=SC2016 # Backticks are literal public-help text.
-assert_contains "$adapter_help" 'invokes only `lavish-axi poll`' \
-  "the adapter's help excludes opening, export, publication, and sharing"
+assert_contains "$adapter_help" 'invokes only `bin/fm-lavish-review.sh run poll`' \
+  "the adapter's help routes polling through the private runtime envelope"
 
 runner_help=$("$ROOT/bin/fm-procevent.sh" --help 2>&1 || true)
 assert_contains "$runner_help" "Durability boundary" \

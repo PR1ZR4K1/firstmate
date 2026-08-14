@@ -71,6 +71,12 @@
 # stale: reconcile stops that surviving group and releases its generation before
 # any replacement starts, and keeps the claim for a later retry when it cannot.
 #
+# Capture output defaults to 1048576 bytes. An adapter may print one numeric
+# `output-limit` value to request a different default for output it has already
+# normalized; a nonempty FM_PROCEVENT_MAX_OUTPUT_BYTES always overrides it.
+# Invalid explicit limits are refused, while a missing, failing, or malformed
+# adapter limit keeps the generic default.
+#
 # Durability boundary: see bin/fm-procevent-lib.sh. This runner proves capture
 # before publication and bounded re-announcement until handled, and nothing
 # about the source side of the handoff.
@@ -89,7 +95,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-procevent-lib.sh"
 
 REG=$(fm_procevent_registry_dir "$STATE")
-MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
+DEFAULT_MAX_OUTPUT_BYTES=1048576
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() {
@@ -112,6 +118,18 @@ adapter_result_is_terminal() {  # <adapter> <result-file>
   script=$(adapter_script "$1")
   [ -f "$script" ] && [ ! -L "$script" ] || return 1
   "$script" terminal "$2" >/dev/null 2>&1
+}
+
+# An adapter may request a larger default bound only for its already-normalized
+# output. A caller-supplied FM_PROCEVENT_MAX_OUTPUT_BYTES always wins, and a
+# missing or failing adapter command leaves the generic 1 MiB default intact.
+adapter_output_limit() {  # <adapter>
+  local script limit
+  script=$(adapter_script "$1")
+  [ -f "$script" ] && [ ! -L "$script" ] || return 1
+  limit=$("$script" output-limit 2>/dev/null) || return 1
+  case "$limit" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$limit"
 }
 
 source_file()  { printf '%s/%s.source\n' "$REG" "$1"; }
@@ -256,7 +274,7 @@ cmd_start_public() {
 }
 
 cmd_start() {
-  local id=${1-} adapter out rc claimed bound_rc published_capture=0
+  local id=${1-} adapter out rc claimed bound_rc published_capture=0 output_limit requested_limit
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   require_runner_group
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
@@ -276,6 +294,18 @@ cmd_start() {
     fm_procevent_source_lock_release "$id"
     die "registration argv is unreadable: $id"
   fi
+  output_limit=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-}
+  if [ -z "$output_limit" ]; then
+    output_limit=$DEFAULT_MAX_OUTPUT_BYTES
+    if requested_limit=$(adapter_output_limit "$adapter"); then
+      output_limit=$requested_limit
+    fi
+  fi
+  case "$output_limit" in ''|*[!0-9]*)
+    fm_procevent_source_lock_release "$id"
+    die "FM_PROCEVENT_MAX_OUTPUT_BYTES must be a nonnegative integer"
+    ;;
+  esac
   fm_procevent_claim_acquire_locked "$id" "$FM_HOME" "$$" "$(source_file "$id")"
   claimed=$?
   fm_procevent_source_lock_release "$id"
@@ -308,7 +338,6 @@ cmd_start() {
   printf '%s\n' "$$" > "$(runner_file "$id")" 2>/dev/null || true
   chmod 0600 "$(runner_file "$id")" 2>/dev/null || true
 
-  case "$MAX_OUTPUT_BYTES" in ''|*[!0-9]*) die "FM_PROCEVENT_MAX_OUTPUT_BYTES must be a nonnegative integer" ;; esac
   out=$(staging_file "$id" "$CLAIM_TOKEN")
   [ ! -e "$out" ] && [ ! -L "$out" ] || die "cannot safely stage output"
   (umask 077; : > "$out") || die "cannot stage output"
@@ -336,7 +365,7 @@ cmd_start() {
       $truncated = 1 if $take < $count;
     }
     exit($truncated ? 3 : 0);
-  ' "$MAX_OUTPUT_BYTES" > "$out"
+  ' "$output_limit" > "$out"
   local pipe_status=("${PIPESTATUS[@]}") truncated=0
   rc=${pipe_status[0]}
   bound_rc=${pipe_status[1]}
@@ -358,7 +387,7 @@ cmd_start() {
   durable=$(fm_procevent_capture "$STATE" "$id" "$adapter" "$out") || { rm -f -- "$out"; die "cannot durably capture the result"; }
   rm -f -- "$out"
   STAGED_OUTPUT=
-  [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
+  [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$output_limit" >&2
 
   if publish_result "$durable"; then
     published_capture=1

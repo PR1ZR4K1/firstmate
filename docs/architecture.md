@@ -178,7 +178,7 @@ The intake and authority contract in `AGENTS.md` owns when separate scout resear
 ## Private visual reviews
 
 Firstmate uses Lavish as the preferred private local surface when complex captain decisions, structured input, rich comparisons or plans, architecture, UI evidence, investigation findings, or substantial work descriptions benefit from visual inspection.
-[`lavish-review.md`](lavish-review.md) owns the component boundaries among the review skill, safe local path helper, process-event callback, durable decision lifecycle, worker instructions, and harness or runtime axes.
+[`lavish-review.md`](lavish-review.md) owns the component boundaries among the review skill, private artifact and runtime envelope, sequence-keyed process-event callback, durable decision lifecycle, worker instructions, and harness or runtime axes.
 
 ## Dispatch profiles
 

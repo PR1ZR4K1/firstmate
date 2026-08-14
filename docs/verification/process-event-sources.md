@@ -32,7 +32,7 @@ code: VALIDATION_ERROR   # exit 2
 Exit 2 with `VALIDATION_ERROR` is positive proof the subcommand does not exist, because the word is parsed as a filename.
 Note that `lavish-axi <anything> --help` exits 0 for any argument, including a nonsense subcommand, so a `--help` exit code can never be used as a capability probe.
 
-The adapter depends on none of this: it uses only the published poll shape above.
+The adapter depends on none of this: it uses only the published poll shape above, invoked through Firstmate's home-scoped loopback runtime envelope.
 
 ## Why each completed Lavish poll retires before handler work
 
@@ -42,8 +42,11 @@ A generic automatic restart can only repeat the plain stored poll argv, and the 
 Leaving ordinary feedback registered would therefore allow a plain poll to restart before firstmate revises the artifact and supplies `--agent-reply`.
 
 The adapter reports every `status: feedback` result terminal for its current registration, so the runner captures and announces the result, then removes that exact registration before it can restart.
-After the result is handled, firstmate explicitly registers the next one-result poll with `--agent-reply`.
-`tests/fm-procevent.test.sh` drives the real adapter and runner against a stand-in that emits ordinary feedback, proves the registration is absent before handler work, then proves the explicit continuation invokes only `lavish-axi poll` with the reply preserved as one argv element and captures exactly one next result.
+After applying the result, firstmate explicitly registers the next one-result poll with the exact source sequence and `--agent-reply`.
+Under one source lock, the adapter stores the reply in an owner-only receipt, publishes only its internal artifact, source id, and sequence command, and acknowledges the prior result.
+The registered command waits for that acknowledgement before claiming the receipt, so a crash at any earlier cut leaves the prior result re-announceable and an idempotent repeat arm releases the continuation.
+`tests/fm-procevent.test.sh` drives the real adapter and runner against a stand-in that emits ordinary feedback, proves the registration is absent before handler work, proves retryable argv contains no reply, and captures exactly one next result through the runtime envelope.
+It also constructs the durable registration-before-acknowledgement cut, proves the waiting command does not invoke Lavish, then repeats the public arm and observes one acknowledgement, one poll, and one delivered receipt.
 
 An ended review needs the same stop behavior without explicit continuation.
 The published poll help states that lifecycle directly:
@@ -60,6 +63,16 @@ The sentence between those two, in the same help text, is "Its final feedback is
 So the last useful response of an ended review is a `feedback` response, and every poll after it returns an empty ended session immediately.
 Every feedback response now retires for the handler-mediated continuation boundary above, including the final response carrying `session_ended`.
 The adapter still parses lifecycle fields only from the response's leading `session:` block, so prompt payload text cannot forge waiting, feedback, ended, or missing classification.
+
+## Reply interruption and complete prompt retention
+
+The interruption regression starts a sequence-keyed reply, waits until the adapter has claimed it and invoked the stand-in CLI, then kills the whole owned process generation before a result returns.
+Reconciliation invokes the replacement adapter command, which observes the claimed receipt, invokes no external reply command, captures one `ambiguous` result, and retires the registration.
+Inspected `delivered` recovery registers a plain poll while the exact ambiguity remains re-announceable, prints the ambiguity sequence to acknowledge afterward, and leaves the call log with the reply flag exactly once across both generations.
+A second regression models a reply proven not delivered, confirms no retry occurs before recovery, and confirms `not-delivered` recovery releases exactly one retry carrying the original reply before the ambiguity is acknowledged.
+
+A separate executable regression emits a 1,200,000-byte DOM field followed by a prompt larger than 1 MiB and a tail decision marker.
+The captured result replaces the DOM with its byte-count marker, remains larger than the generic 1 MiB default because the complete prompt survives, retains the final decision and next-step fields, and still classifies as feedback.
 
 ## The loss limitation this runner cannot close
 
@@ -93,7 +106,10 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | terminal retirement preserves the result | the retired source's captured output, its announced event, its handled acknowledgement, and later explicit `retire` all still behave normally |
 | registration-generation retirement | an old terminal runner preserves a concurrently replaced registration and releases ownership so the replacement runs independently; injected registration-removal failure retains a terminal claim, performs no second poll, and completes idempotently once removal recovers |
 | one `Send & End`, one result | an armed Lavish source driven against a stand-in for the published poll, which delivers the final `session_ended` feedback once and empty ended sessions afterward, polls exactly once, captures exactly one result, publishes one distinct event, and retires itself |
-| handler-mediated ordinary feedback continuation | an ordinary feedback result retires its exact registration before handler work; explicit re-arm invokes only `lavish-axi poll`, carries `--agent-reply` as intact argv, captures one next result, and never invokes share |
+| handler-mediated ordinary feedback continuation | an ordinary feedback result retires its exact registration before handler work; explicit re-arm is keyed to that sequence, atomically publishes its receipt and registration with the acknowledgement, keeps the reply out of retryable argv, invokes the poll through the private runtime envelope, commits a delivered receipt, captures one next result, and never invokes share |
+| acknowledgement-before-re-arm crash cut | a manually reconstructed partial registration waits without invoking Lavish while the source result remains unhandled; repeating the same public arm acknowledges it and releases exactly one continuation poll |
+| interrupted reply replay safety | a reply is claimed before the stand-in CLI runs; killing that generation causes reconciliation to capture terminal ambiguity without a second CLI call, while inspected delivered recovery continues with a plain poll and inspected not-delivered recovery releases exactly one explicit retry before either test acknowledges the ambiguity sequence returned by recovery |
+| complete decision retention | a DOM field larger than 1 MiB is replaced before capture while a prompt itself larger than 1 MiB, its tail decision marker, and following next-step field survive under the adapter's bounded normalized-output allowance |
 | bounded re-announcement until handled | a durably captured result with no handled acknowledgement is re-announced by `reconcile` with the same source and sequence on every call - not only the first restart after a crash - and a presented-but-unacknowledged wake resurfaces identically after a simulated replacement session |
 | handled acknowledgement | `fm-procevent.sh handled <source-id> <sequence>` atomically and idempotently records handling at mode `0600`, fails without leaving a marker when private-mode enforcement fails, reports the first call distinctly from every repeat, stops further re-announcement once recorded, and never authorizes a paired effect twice across repeat calls |
 | publication-and-acknowledgement serialization | a concurrent `reconcile` cannot append a wake after `handled` wins the shared per-source boundary, so an acknowledged result is not re-announced by a publication race |
@@ -118,7 +134,7 @@ Exercised by `tests/fm-procevent.test.sh` against a fake blocking source whose c
 | healthy-home invariance | homes with no registration or owned runner claim retain ordinary registration-only supervision and teardown behavior |
 | source-only supervision | a registered source with no task metadata trips the shared predicate and general guard |
 | argv integrity | an argument containing spaces survives as one argument, a shell-looking argument is passed literally with no interpretation, and an unrepresentable newline is rejected at registration |
-| bounded output | output beyond `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured |
+| bounded output | output beyond an explicit `FM_PROCEVENT_MAX_OUTPUT_BYTES` is drained while only the bound is staged, then truncated and captured; without an override, adapter-normalized output may request its own validated bounded default |
 | condition->action single-fire and trust | `tests/fm-procevent-when.test.sh` drives the public `when` adapter and generic runner with real commands, proving stable true fires once, a claimed fire restarts as ambiguous without a second action, concurrent arms publish one complete watch, and mutated specs or action executables are refused before execution |
 | condition->action terminal outcomes | the same suite proves flapping true polls do not fire, action failure, condition error budget, deadline expiry, and a true poll completing after its deadline each produce the expected terminal captured result without an unsafe action |
 | condition->action process bounds | the same suite proves action timeout terminates descendants and command-output staging remains within `FM_WHEN_OUTPUT_TAIL_BYTES` while the command runs |

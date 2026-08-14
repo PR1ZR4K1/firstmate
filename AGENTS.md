@@ -106,6 +106,8 @@ state/               runtime records and signals; gitignored
   pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
   procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
   procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
+  lavish-axi/        owner-only home-scoped Lavish server, session, chat, prompt, DOM, and whiteboard state; created only through bin/fm-lavish-review.sh's runtime envelope
+  lavish-continuations/  owner-only sequence-keyed agent-reply receipts; claimed delivery is never replayed automatically, and ambiguous delivery requires inspected recovery
   when/              private condition->action watch specs, their trust bindings, and single-fire markers; written only by bin/fm-procevent-when.sh (section 13's process-event-sources trigger)
   x-inbox/           generated Relay pending mention payloads; fmx-respond drains it (section 14)
   x-context/         generated Relay durable per-request reply context and one-wake offer markers, keyed by request_id; survives inbox cleanup and expires within seven days (section 14; bin/fm-x-lib.sh)
@@ -170,7 +172,7 @@ When that section reports its checks still in progress it names exactly what is 
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the required tools are present and GitHub authentication is good.
-Use `gh-axi` for GitHub, `chrome-devtools-axi` for browser work, and `lavish-axi` for rich reviews; load `lavish-review` at its trigger and consult current tool help rather than memorizing flags.
+Use `gh-axi` for GitHub and `chrome-devtools-axi` for browser work; load `lavish-review` at its trigger and use its private runtime envelope for every rich-review CLI command.
 A silent bootstrap section needs no action; for any printed actionable diagnostic line, load `bootstrap-diagnostics` and follow its owner procedure.
 `BOOTSTRAP_INFO:` lines are completed no-action facts and do not require loading a skill.
 `secondmate-provisioning` owns startup secondmate sync, liveness, and inherited local-material convergence.

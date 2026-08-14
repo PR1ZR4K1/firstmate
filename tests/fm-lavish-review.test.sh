@@ -87,7 +87,7 @@ test_git_ignore_and_symlink_guards() {
 
   FM_HOME="$home" "$HELPER" prepare "$project" subject-ui > "$TMP_ROOT/unignored.out" 2>&1 || rc=$?
   [ "$rc" -ne 0 ] || fail "Git review root without a .lavish ignore rule was accepted"
-  assert_grep "must ignore .lavish/" "$TMP_ROOT/unignored.out" \
+  assert_grep "must ignore every Lavish review file" "$TMP_ROOT/unignored.out" \
     "unignored Git root refusal did not explain the privacy requirement"
 
   printf '.lavish/\n' > "$project/.gitignore"
@@ -114,6 +114,67 @@ test_git_ignore_and_symlink_guards() {
     "symlinked asset refusal did not identify the unsafe review tree"
   rm -f "$project/.lavish/subject-ui/linked-asset.png"
 
+  printf 'outside hardlink asset\n' > "$TMP_ROOT/outside-hardlink-asset.png"
+  ln "$TMP_ROOT/outside-hardlink-asset.png" "$project/.lavish/subject-ui/hardlinked-asset.png"
+  rc=0
+  FM_HOME="$home" "$HELPER" check "$artifact" > "$TMP_ROOT/asset-hardlink.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "hardlinked sibling asset passed the pre-arm check"
+  assert_grep "single-link regular file" "$TMP_ROOT/asset-hardlink.out" \
+    "hardlinked asset refusal did not identify the confinement violation"
+  rc=0
+  FM_HOME="$home" "$HELPER" prepare "$project" subject-ui > "$TMP_ROOT/prepare-asset-hardlink.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "prepare accepted an existing hardlinked sibling asset"
+  rm -f "$project/.lavish/subject-ui/hardlinked-asset.png"
+
+  mkdir -p "$project/.lavish/hardlinked-ui"
+  printf '<html>outside hardlink target</html>\n' > "$TMP_ROOT/outside-hardlink-target.html"
+  ln "$TMP_ROOT/outside-hardlink-target.html" "$project/.lavish/hardlinked-ui/review.html"
+  rc=0
+  FM_HOME="$home" "$HELPER" prepare "$project" hardlinked-ui > "$TMP_ROOT/artifact-hardlink.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "prepare accepted a hardlinked review artifact"
+  assert_grep "single-link regular file" "$TMP_ROOT/artifact-hardlink.out" \
+    "hardlinked artifact refusal did not identify the confinement violation"
+  rc=0
+  FM_HOME="$home" "$HELPER" check "$project/.lavish/hardlinked-ui/review.html" \
+    > "$TMP_ROOT/check-artifact-hardlink.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-arm check accepted a hardlinked review artifact"
+
+  mkdir -p "$project/.lavish/tracked-ui"
+  printf '<html>tracked private review</html>\n' > "$project/.lavish/tracked-ui/review.html"
+  git -C "$project" add -f .lavish/tracked-ui/review.html
+  rc=0
+  FM_HOME="$home" "$HELPER" prepare "$project" tracked-ui > "$TMP_ROOT/tracked-artifact.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "prepare accepted a tracked private review artifact"
+  assert_grep "must be untracked" "$TMP_ROOT/tracked-artifact.out" \
+    "tracked review refusal did not name the index boundary"
+  git -C "$project" reset -q -- .lavish/tracked-ui/review.html
+  printf 'tracked asset\n' > "$project/.lavish/subject-ui/tracked.css"
+  git -C "$project" add -f .lavish/subject-ui/tracked.css
+  rc=0
+  FM_HOME="$home" "$HELPER" check "$artifact" > "$TMP_ROOT/tracked-asset.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-arm check accepted a tracked sibling asset"
+  assert_grep "must be untracked" "$TMP_ROOT/tracked-asset.out" \
+    "tracked asset refusal did not identify the complete index check"
+  git -C "$project" reset -q -- .lavish/subject-ui/tracked.css
+  rm -f "$project/.lavish/subject-ui/tracked.css"
+
+  printf '.lavish/**\n!.lavish/negated-ui/\n!.lavish/negated-ui/review.html\n' > "$project/.gitignore"
+  rc=0
+  FM_HOME="$home" "$HELPER" prepare "$project" negated-ui > "$TMP_ROOT/negated-artifact.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "prepare accepted an artifact negated out of the ignore rules"
+  assert_grep "must ignore every Lavish review file" "$TMP_ROOT/negated-artifact.out" \
+    "negated artifact refusal did not name the exact-path ignore boundary"
+
+  printf '.lavish/**\n!.lavish/subject-ui/\n.lavish/subject-ui/**\n!.lavish/subject-ui/public.txt\n' > "$project/.gitignore"
+  printf 'unignored asset\n' > "$project/.lavish/subject-ui/public.txt"
+  rc=0
+  FM_HOME="$home" "$HELPER" check "$artifact" > "$TMP_ROOT/negated-asset.out" 2>&1 || rc=$?
+  [ "$rc" -ne 0 ] || fail "pre-arm check accepted an asset negated out of ignore rules"
+  assert_grep "must ignore every Lavish review file" "$TMP_ROOT/negated-asset.out" \
+    "negated asset refusal did not identify the complete-tree privacy check"
+  rm -f "$project/.lavish/subject-ui/public.txt"
+  printf '.lavish/\n' > "$project/.gitignore"
+
   rm -f "$artifact"
   printf '<html>outside target</html>\n' > "$TMP_ROOT/outside-target.html"
   ln -s "$TMP_ROOT/outside-target.html" "$artifact"
@@ -131,7 +192,115 @@ test_git_ignore_and_symlink_guards() {
   [ "$rc" -ne 0 ] || fail "symlinked .lavish root was accepted"
   assert_grep "unsafe .lavish root" "$TMP_ROOT/root-symlink.out" \
     "symlinked .lavish refusal did not identify the unsafe root"
-  pass "Git ignore and symlink guards keep Lavish artifacts inside the intended local review root"
+  pass "Git index, ignore, symlink, and hardlink guards confine the complete Lavish review tree"
+}
+
+test_private_runtime_envelope() {
+  local home fakebin log state_dir port_one port_two mode out before after rc=0
+  home="$TMP_ROOT/runtime-home"
+  mkdir -p "$home/state"
+  fakebin=$(fm_fakebin "$TMP_ROOT/runtime-bin")
+  log="$TMP_ROOT/runtime-envelope.log"
+  cat > "$fakebin/lavish-axi" <<SH
+#!/usr/bin/env bash
+printf 'state=%s\n' "\${LAVISH_AXI_STATE_DIR-unset}" >> "$log"
+printf 'host=%s\n' "\${LAVISH_AXI_HOST-unset}" >> "$log"
+printf 'link=%s\n' "\${LAVISH_AXI_LINK_HOST-unset}" >> "$log"
+printf 'allowed=%s\n' "\${LAVISH_AXI_ALLOWED_HOSTS-unset}" >> "$log"
+printf 'port=%s\n' "\${LAVISH_AXI_PORT-unset}" >> "$log"
+printf 'telemetry=%s\n' "\${LAVISH_AXI_TELEMETRY-unset}" >> "$log"
+printf 'publish-token=%s\n' "\${LAVISH_AXI_HTML_APP_TOKEN-unset}" >> "$log"
+printf 'argv=' >> "$log"
+printf '<%s>' "\$@" >> "$log"
+printf '\n' >> "$log"
+printf 'private state\n' > "\$LAVISH_AXI_STATE_DIR/fixture-state"
+SH
+  chmod +x "$fakebin/lavish-axi"
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" \
+    LAVISH_AXI_STATE_DIR="$TMP_ROOT/ambient-state" \
+    LAVISH_AXI_HOST=0.0.0.0 LAVISH_AXI_LINK_HOST=public.example \
+    LAVISH_AXI_ALLOWED_HOSTS='*' LAVISH_AXI_PORT=61234 \
+    LAVISH_AXI_TELEMETRY=on LAVISH_AXI_HTML_APP_TOKEN=secret \
+    "$HELPER" run --help
+  PATH="$fakebin:$PATH" FM_HOME="$home" LAVISH_AXI_PORT=60000 \
+    "$HELPER" run design
+
+  state_dir="$home/state/lavish-axi"
+  assert_grep "state=$state_dir" "$log" \
+    "Lavish commands did not share the home-scoped state directory"
+  [ "$(grep -c "^state=$state_dir$" "$log")" = 2 ] \
+    || fail "Lavish lifecycle commands did not use one consistent state identity"
+  assert_no_grep "$TMP_ROOT/ambient-state" "$log" \
+    "ambient Lavish state escaped the Firstmate home"
+  assert_grep 'host=127.0.0.1' "$log" "Lavish runtime did not force loopback binding"
+  assert_grep 'link=127.0.0.1' "$log" "Lavish runtime emitted a non-loopback link"
+  assert_grep 'allowed=127.0.0.1 localhost' "$log" \
+    "Lavish runtime did not close the allowed-host set"
+  assert_grep 'telemetry=off' "$log" "Lavish runtime did not disable telemetry"
+  assert_grep 'publish-token=unset' "$log" \
+    "ambient publication credentials crossed the private runtime envelope"
+  port_one=$(awk -F= '$1 == "port" { print $2; exit }' "$log")
+  port_two=$(awk -F= '$1 == "port" { value=$2 } END { print value }' "$log")
+  [ "$port_one" = "$port_two" ] || fail "Lavish runtime port changed between lifecycle commands"
+  [ "$port_one" != 61234 ] && [ "$port_one" != 60000 ] \
+    || fail "ambient Lavish port overrode the home-scoped server identity"
+  case "$port_one" in ''|*[!0-9]*) fail "Lavish runtime port is not numeric: $port_one" ;; esac
+  [ "$port_one" -ge 20000 ] && [ "$port_one" -lt 50000 ] \
+    || fail "Lavish runtime port escaped its deterministic private range: $port_one"
+  mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
+    '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$state_dir/fixture-state")
+  assert_contains "$mode" 600 "Lavish runtime files are not owner-only"
+  mode=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
+    '. "$1/bin/fm-pr-lib.sh"; fm_pr_file_mode "$2"' _ "$ROOT" "$state_dir")
+  assert_contains "$mode" 700 "Lavish runtime directory is not owner-only"
+
+  before=$(grep -c '^argv=' "$log")
+  mkdir -p "$TMP_ROOT/outside-runtime-root/.lavish/outside"
+  printf '<html>outside private root</html>\n' \
+    > "$TMP_ROOT/outside-runtime-root/.lavish/outside/review.html"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run open \
+    "$TMP_ROOT/outside-runtime-root/.lavish/outside/review.html" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime opened an artifact outside the private review root"
+  assert_contains "$out" "neither the active FM_HOME nor a Git worktree root" \
+    "outside runtime artifact refusal did not name the private root"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run export "$home/.lavish/missing/review.html" --out "$TMP_ROOT/export.html" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime accepted an export path override"
+  assert_contains "$out" "export path overrides are not allowed" \
+    "export override refusal did not name the confinement boundary"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run share "$state_dir/fixture-state" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "private Lavish runtime exposed external sharing"
+  assert_contains "$out" "does not support external sharing" \
+    "share refusal did not name the private workflow boundary"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run setup hooks 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime allowed global setup mutation"
+  assert_contains "$out" "does not modify global tool setup" \
+    "setup refusal did not name the global-state boundary"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run server 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime allowed direct server startup"
+  assert_contains "$out" "owns server startup" \
+    "server refusal did not name the lifecycle boundary"
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run publish "$home/.lavish/future/review.html" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime passed an unknown future command through"
+  assert_contains "$out" "unsupported command" \
+    "unknown command refusal did not preserve the closed runtime surface"
+  after=$(grep -c '^argv=' "$log")
+  [ "$before" = "$after" ] || fail "refused Lavish commands still invoked the installed CLI"
+
+  rc=0
+  out=$(PATH="$fakebin:$PATH" FM_HOME="$home" "$HELPER" run stop --port 49999 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "Lavish runtime accepted a CLI port identity override"
+  assert_contains "$out" "port overrides are not allowed" \
+    "Lavish port override refusal did not name the identity boundary"
+  [ "$(grep -c '^argv=' "$log")" = "$before" ] \
+    || fail "Lavish override refusal still invoked the installed CLI"
+  pass "Lavish lifecycle commands use one owner-only loopback runtime with telemetry disabled"
 }
 
 test_generated_workers_prepare_but_never_present() {
@@ -178,4 +347,5 @@ test_generated_workers_prepare_but_never_present() {
 test_routing_is_closed_and_keeps_simple_chat
 test_private_local_artifact_boundary
 test_git_ignore_and_symlink_guards
+test_private_runtime_envelope
 test_generated_workers_prepare_but_never_present

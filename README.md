@@ -42,7 +42,7 @@ Launching a supported harness inside it instantiates your first mate - and makes
 ## Features
 
 - **One liaison** - you talk only to the first mate; it dispatches, supervises, escalates only real decisions, and reports plain outcomes.
-- **Rich private reviews** - complex decisions, structured input, plans, architecture, UI evidence, investigation findings, and substantial work descriptions can open as local Lavish review surfaces while simple questions and routine updates stay in chat.
+- **Rich private reviews** - complex decisions, structured input, plans, architecture, UI evidence, investigation findings, and substantial work descriptions can open through an owner-only, loopback Lavish runtime while simple questions and routine updates stay in chat.
 - **A visible crew** - every crewmate works in its own tmux window, experimental herdr/zellij tab, cmux workspace, or Orca terminal you can watch or type into; the first mate reconciles.
 - **Disposable worktrees** - each task runs in a clean [treehouse](https://github.com/kunchenguid/treehouse) git worktree, or an Orca-managed worktree when `backend=orca`, so parallel work on one repo never collides.
 - **Two task shapes** - ship tasks deliver authorized changes; scout tasks leave standalone investigation reports when the intake contract warrants separate research.

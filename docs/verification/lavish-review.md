@@ -37,6 +37,7 @@ Firstmate's compatibility floor is therefore 0.1.50, and the already-installed 0
 ## Current help and playbooks
 
 The following current installed surfaces were opened before implementation.
+The same help, design, playbook, and lifecycle argv now run through `bin/fm-lavish-review.sh run`, which supplies the private runtime envelope without changing the installed command grammar.
 
 ```text
 lavish-axi --help
@@ -63,34 +64,36 @@ The design help requires explicit user design direction first, then the subject 
 
 ## Isolated live smoke
 
-The live smoke used only synthetic content, an isolated `LAVISH_AXI_STATE_DIR`, a dedicated loopback port, an isolated process-event home and claim root, and a named `chrome-devtools-axi` session backed by an already-cached local `chrome-devtools-mcp` executable.
+The live exercises used only synthetic content, an isolated Firstmate home, its runtime-envelope-selected loopback port, an isolated process-event claim root, and for the responsive interaction exercise a named `chrome-devtools-axi` session backed by an already-cached local `chrome-devtools-mcp` executable.
 No real captain operated the artifact, and the artifact loaded no remote scripts, fonts, images, styles, or other network resources.
-No export, share, account, credential, token, purchase, or external publishing action ran.
+No export, share, account, credential, token, purchase, telemetry, or external publishing action ran.
+The correction smoke re-opened the installed 0.1.50 CLI through the final runtime envelope, submitted synthetic feedback over that loopback server, and exercised the final sequence-keyed reply continuation end to end.
 
 The representative artifact combined the `comparison` and mandatory `input` playbooks with two radio options, an optional rationale, a separate queue action, a separate send action, visible focus, semantic landmarks, responsive stacking, explicit colors, and no hover-only control.
 
 | Exercise | Observed result |
 | --- | --- |
-| private path | `bin/fm-lavish-review.sh prepare` produced an ignored `.lavish/live-smoke/review.html` path, and `check` accepted that real file |
-| open | `lavish-axi <artifact> --no-open` returned `status: opened` and one loopback session URL |
-| resume | the same command returned the same session URL and remained opened |
+| private path | `bin/fm-lavish-review.sh prepare` produced an ignored `.lavish/live-runtime/review.html` path, and `check` accepted that real single-link file |
+| runtime confinement | `bin/fm-lavish-review.sh run` selected `127.0.0.1`, one deterministic home port, mode `0700` runtime state, and mode `0600` state and server-log files |
+| open | `bin/fm-lavish-review.sh run <artifact> --no-open` returned `status: opened` and one loopback session URL |
+| resume | the same enveloped command returned the same session URL and remained opened |
 | approved callback | `bin/fm-procevent-lavish.sh arm` plus `bin/fm-procevent.sh reconcile` reported one live `lavish` source without blocking the conversational command |
 | structured input | browser automation selected Route A, filled a synthetic rationale, queued exactly one keyed `smoke-route` answer, and sent it |
 | feedback intake | the process-event inbox captured sequence 1 at mode-private state with `status: feedback`, tag `choice`, key `smoke-route`, answer `A`, and the synthetic rationale |
 | pre-handler stop | `bin/fm-procevent.sh list` reported no source after sequence 1, proving ordinary feedback retired before a plain poll could restart |
-| revision and reply | the artifact live-reloaded its applied synthetic answer, and explicit re-arm displayed the `--agent-reply` message in the browser before accepting more input |
+| revision and reply | explicit re-arm named `--after-sequence 1` and reported that sequence handled in the same operation; the installed server recorded the agent reply, the second result retained final feedback, and the private delivered receipt was mode `0600` |
 | responsive and accessible surface | the browser accessibility snapshot exposed headings, region, form, radios, labeled textarea, buttons, and live status at a compact viewport, while the outer page reported equal client and scroll widths |
 | end behavior | synthetic `Send & End` feedback arrived once as sequence 2 with `session_ended: true` and `ended_by: user`, then left no registered source |
 | ended-session refusal | a later plain no-open command returned `status: user-ended` and did not reopen the browser session |
 | cleanup | the named browser bridge stopped, the isolated Lavish server stopped, and process-event home preflight reported ready with no live source |
 
-The smoke used the approved callback rather than direct `lavish-axi poll`, shell backgrounding, or an untracked detached wait.
+The smoke used the approved callback and runtime envelope rather than direct `lavish-axi poll`, shell backgrounding, or an untracked detached wait.
 The synthetic input result was acknowledged only after its revision was applied, and the final ended result was acknowledged without re-arming.
 
 ## Machine-enforced coverage
 
-`tests/fm-lavish-review.test.sh` exercises the closed chat-versus-Lavish routing set, unknown-shape refusal, private default path, design-neutral preparation, no open or network side effect, Git ignore enforcement, path traversal rejection, symlink rejection, and generated worker communication and authority boundaries.
-`tests/fm-procevent.test.sh` exercises exact poll-only argv, one owner, interruption recovery, durable capture and re-announcement, one-result ordinary feedback, explicit `--agent-reply` continuation, final feedback retirement, ended-session behavior, no-share invocation, and adapter path safety.
+`tests/fm-lavish-review.test.sh` exercises the closed chat-versus-Lavish routing set, unknown-shape refusal, private default path, design-neutral preparation, no preparation side effect, exact index-aware ignore and tracked-file rejection, path traversal, symlink and hardlink rejection, the loopback owner-only clean runtime envelope, telemetry opt-out, stable server identity, lifecycle artifact validation, export-output refusal, external-share refusal, and generated worker authority boundaries.
+`tests/fm-procevent.test.sh` exercises exact internal poll argv, one owner, interruption recovery, durable capture and re-announcement, one-result ordinary feedback, sequence-keyed private reply receipts, no raw reply argv, automatic-replay refusal, both inspected ambiguity recovery outcomes, oversized DOM removal before complete prompt and decision capture, final feedback retirement, ended-session behavior, no-share invocation, and adapter path safety.
 `tests/fm-decision-hold-lifecycle.test.sh` exercises durable unresolved-decision inventory, visual-review completion, post-review survival, exact answer files, dependent-work routing, idempotent resolution, and no parallel decision database.
 `tests/fm-brief.test.sh` and `tests/fm-ask-user-authority.test.sh` exercise generated worker escalation and no-mistakes ask-user ownership.
 `bin/fm-doc-audience-check.sh` enforces the new skill, architecture page, and verification page classifications and their owner pointer.
@@ -114,9 +117,14 @@ The current focused summaries were:
 ```text
 ok - Lavish routing keeps simple questions and routine notices in chat and selects rich review shapes explicitly
 ok - Lavish review preparation is private, local, design-neutral, and free of open, poll, share, or network side effects
-ok - Git ignore and symlink guards keep Lavish artifacts inside the intended local review root
+ok - Git index, ignore, symlink, and hardlink guards confine the complete Lavish review tree
+ok - Lavish lifecycle commands use one owner-only loopback runtime with telemetry disabled
 ok - generated worker instructions allow private artifact preparation without captain communication, polling, sharing, self-answer, or authority expansion
-ok - ordinary feedback stops before handler work and resumes only through the approved callback with agent reply
+ok - ordinary feedback stops before handler work and resumes through a sequence-keyed reply receipt
+ok - a registration-before-acknowledgement cut remains re-announceable and resumes once
+ok - oversized DOM data is bounded before complete prompt and decision capture
+ok - an interrupted claimed reply surfaces ambiguity and never replays automatically
+ok - inspected not-delivered recovery releases exactly one explicit reply retry
 all procevent tests passed
 ok - ended visual review and its submitted answer use the same durable decision lifecycle
 ok - fm-brief.sh: investigation and visual-review completions load the shared decision policy
