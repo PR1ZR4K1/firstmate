@@ -52,6 +52,7 @@
 #   added_on   real YYYY-MM-DD provenance date
 #
 # Local asset paths and hashes must be unique within a record.
+# A reusable-asset local role is valid only on a licensed reusable-asset record.
 # A thumbnail must use png, jpg, jpeg, webp, avif, or bmp.
 # Every declared local file must exist, must not be a symlink, and must match its
 # recorded SHA-256.
@@ -79,6 +80,7 @@
 # overall_affinity.
 # Every rating is null or an integer from 1 through 5.
 # Duplicate or unknown preference IDs are rejected.
+# Each JSON file or import must contain exactly one top-level JSON document.
 # Export and import canonicalize all object keys and sort preferences by ID.
 #
 # Commands:
@@ -89,6 +91,7 @@
 #   render-index                      deterministic reviewable Markdown index
 #   render-card <id>...               approved-only four-pillar Markdown card
 #   preferences export                canonical preferences JSON to stdout
+#   preferences check <file|->        validate preferences without replacing them
 #   preferences import <file|->       validate and atomically replace preferences
 #   gallery render                    deterministic escaped gallery HTML to stdout
 #   gallery start                     start the private loopback gallery
@@ -100,7 +103,8 @@
 #   The default stable URL is http://127.0.0.1:43127/.
 #   FM_DESIGN_GALLERY_PORT may select another fixed port from 1024 through 65535
 #   for a home whose default conflicts, without changing the loopback-only host.
-#   Runtime identity and logs remain below .gallery/.
+#   Runtime identity and logs remain below .gallery/ and are bound to the
+#   canonical private-library root for one home.
 #   The server has no account, external fetch, telemetry, publish, or share path.
 #   It serves only validated declared local preview files and truthful
 #   placeholders for everything else.
@@ -130,6 +134,7 @@ Usage:
   fm-design-inspiration.sh render-index
   fm-design-inspiration.sh render-card <id> [<id> ...]
   fm-design-inspiration.sh preferences export
+  fm-design-inspiration.sh preferences check <file|->
   fm-design-inspiration.sh preferences import <file|->
   fm-design-inspiration.sh gallery render
   fm-design-inspiration.sh gallery start
@@ -170,6 +175,10 @@ Commands:
 
   preferences export
     Print canonical deterministic preferences JSON with sorted keys and IDs.
+
+  preferences check <file|->
+    Validate a complete preferences document without replacing private data.
+    A dash reads the document from stdin.
 
   preferences import <file|->
     Validate a complete preferences document and atomically replace only the
@@ -321,6 +330,50 @@ require_safe_library_root() {
   [ -z "$link" ] || die "symlink rejected below private library root: ${link#"$LIBRARY_ROOT"/}"
 }
 
+require_single_json_document() {
+  local file=$1 label=$2
+  jq -se 'length == 1' "$file" >/dev/null 2>&1 || die "$label must contain exactly one valid JSON document"
+}
+
+validate_canonical_urls() {
+  require_node
+  node - "$MANIFEST" <<'NODE'
+const fs = require('node:fs');
+const manifest = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const errors = [];
+const sourceKeys = new Map();
+function canonicalHttps(value, label) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    errors.push(`${label} must be a valid canonical HTTPS URL`);
+    return null;
+  }
+  if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.username || parsed.password) {
+    errors.push(`${label} must be a valid canonical HTTPS URL with a host and no credentials`);
+    return null;
+  }
+  if (parsed.href !== value) {
+    errors.push(`${label} must use canonical HTTPS form: ${parsed.href}`);
+  }
+  return parsed.href;
+}
+for (const [index, item] of manifest.items.entries()) {
+  const source = canonicalHttps(item.provenance.source_url, `items[${index}].provenance.source_url`);
+  if (source) {
+    if (sourceKeys.has(source)) errors.push(`duplicate canonical source URL: ${source}`);
+    else sourceKeys.set(source, index);
+  }
+  if (item.license) canonicalHttps(item.license.url, `items[${index}].license.url`);
+}
+if (errors.length) {
+  for (const error of errors) console.error(`fm-design-inspiration: invalid manifest: ${error}`);
+  process.exit(1);
+}
+NODE
+}
+
 manifest_errors() {
   jq -r --arg schema "$MANIFEST_SCHEMA" '
     def text($max):
@@ -421,6 +474,10 @@ manifest_errors() {
           issue(
             ([ $record.local_assets[] | select(type == "object") | .sha256? | select(type == "string") ] | unique | length) == ($record.local_assets | length);
             "items[\($i)].local_assets hashes must be unique"
+          ),
+          issue(
+            ($record.kind == "reusable-asset" or all($record.local_assets[]; .role != "reusable-asset"));
+            "items[\($i)] is reference-only and cannot declare a reusable-asset local role"
           )
         else
           empty
@@ -567,7 +624,7 @@ validate_preferences_file() {
   [ -e "$file" ] || die "preferences file is missing: $file"
   [ -f "$file" ] || die "preferences file is not a regular file: $file"
   [ ! -L "$file" ] || die "preferences file must not be a symlink: $file"
-  jq -e . "$file" >/dev/null 2>&1 || die 'preferences document is not valid JSON'
+  require_single_json_document "$file" 'preferences document'
   errors="$(preferences_errors "$file")" || die 'preferences validation could not complete'
   if [ -n "$errors" ]; then
     while IFS= read -r error; do
@@ -612,7 +669,7 @@ validate_library() {
   [ -e "$MANIFEST" ] || die 'manifest.json is missing'
   [ -f "$MANIFEST" ] || die 'manifest.json must be a regular file'
   [ ! -L "$MANIFEST" ] || die 'manifest.json must not be a symlink'
-  jq -e . "$MANIFEST" >/dev/null 2>&1 || die 'manifest.json is not valid JSON'
+  require_single_json_document "$MANIFEST" 'manifest.json'
 
   errors="$(manifest_errors)" || die 'manifest validation could not complete'
   if [ -n "$errors" ]; then
@@ -621,6 +678,7 @@ validate_library() {
     done <<<"$errors"
     return 1
   fi
+  validate_canonical_urls || return 1
 
   while IFS=$'\t' read -r asset expected; do
     [ -n "$asset" ] || continue
@@ -946,12 +1004,46 @@ preferences_export() {
   ' "$PREFERENCES"
 }
 
+copy_preferences_source() {
+  local source=$1 destination=$2
+  if [ "$source" = '-' ]; then
+    cat >"$destination"
+  else
+    [ -f "$source" ] || die "preference source is not a regular file: $source"
+    [ ! -L "$source" ] || die "preference source must not be a symlink: $source"
+    cat "$source" >"$destination"
+  fi
+}
+
+preferences_check() {
+  local source=$1 candidate
+  require_jq
+  require_data_root
+  require_safe_library_root
+  [ -f "$MANIFEST" ] || die 'manifest.json is missing'
+  candidate="$(mktemp "$LIBRARY_ROOT/.preferences-check.XXXXXX")" || die 'could not create preference validation staging file'
+  cleanup_preferences_check() {
+    rm -f "$candidate"
+  }
+  trap cleanup_preferences_check EXIT INT TERM
+  chmod 600 "$candidate"
+  copy_preferences_source "$source" "$candidate"
+  validate_preferences_file "$candidate"
+  trap - EXIT INT TERM
+  rm -f "$candidate"
+  printf 'valid: %s\n' "$PREFERENCES_SCHEMA"
+}
+
 preferences_import() {
   local source=$1 candidate canonical
   require_jq
   require_data_root
   require_safe_library_root
   [ -f "$MANIFEST" ] || die 'manifest.json is missing'
+  if [ -e "$PREFERENCES" ] || [ -L "$PREFERENCES" ]; then
+    [ -f "$PREFERENCES" ] || die 'preferences.json destination must be a regular file'
+    [ ! -L "$PREFERENCES" ] || die 'preferences.json destination must not be a symlink'
+  fi
   candidate="$(mktemp "$LIBRARY_ROOT/.preferences-import.XXXXXX")" || die 'could not create preference import staging file'
   canonical="$(mktemp "$LIBRARY_ROOT/.preferences-canonical.XXXXXX")" || {
     rm -f "$candidate"
@@ -962,13 +1054,7 @@ preferences_import() {
   }
   trap cleanup_preferences_import EXIT INT TERM
   chmod 600 "$candidate" "$canonical"
-  if [ "$source" = '-' ]; then
-    cat >"$candidate"
-  else
-    [ -f "$source" ] || die "preference import source is not a regular file: $source"
-    [ ! -L "$source" ] || die "preference import source must not be a symlink: $source"
-    cat "$source" >"$candidate"
-  fi
+  copy_preferences_source "$source" "$candidate"
   validate_preferences_file "$candidate"
   jq -S --arg schema "$PREFERENCES_SCHEMA" '
     {schema:$schema, preferences:(.preferences | sort_by(.id))}
@@ -986,34 +1072,58 @@ gallery_port() {
   printf '%s\n' "$port"
 }
 
+gallery_home_id() {
+  require_node
+  node -e 'console.log(require("node:crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' "$LIBRARY_ROOT"
+}
+
+require_safe_gallery_runtime() {
+  require_library_root_only
+  if [ ! -e "$GALLERY_RUNTIME" ] && [ ! -L "$GALLERY_RUNTIME" ]; then
+    return 1
+  fi
+  [ -d "$GALLERY_RUNTIME" ] || die '.gallery must be a directory'
+  [ ! -L "$GALLERY_RUNTIME" ] || die '.gallery must not be a symlink'
+  local physical link
+  physical="$(cd "$GALLERY_RUNTIME" && pwd -P)" || die 'could not resolve the private gallery runtime'
+  [ "$physical" = "$GALLERY_RUNTIME" ] || die 'private gallery runtime escaped the private library root'
+  link="$(find "$GALLERY_RUNTIME" -type l -print -quit 2>/dev/null)" || die 'could not inspect the private gallery runtime for symlinks'
+  [ -z "$link" ] || die "symlink rejected below private gallery runtime: ${link#"$GALLERY_RUNTIME"/}"
+}
+
 gallery_state_read() {
+  local expected_home_id=$1
   [ -e "$GALLERY_STATE" ] || return 1
   [ -f "$GALLERY_STATE" ] || die 'gallery state is not a regular file'
   [ ! -L "$GALLERY_STATE" ] || die 'gallery state must not be a symlink'
-  jq -er '
-    select(.schema == "firstmate.design-inspiration.gallery-runtime/v1")
+  require_single_json_document "$GALLERY_STATE" 'gallery state'
+  jq -er --arg home_id "$expected_home_id" '
+    select(keys == ["home_id", "host", "pid", "port", "schema", "token", "url"])
+    | select(.schema == "firstmate.design-inspiration.gallery-runtime/v1")
     | select((.pid | type) == "number" and (.pid | floor) == .pid and .pid > 0)
     | select((.port | type) == "number" and (.port | floor) == .port and .port >= 1024 and .port <= 65535)
     | select((.token | type) == "string" and (.token | test("^[a-f0-9]{64}$")))
     | select(.host == "127.0.0.1")
-    | [.pid, .port, .token, .url] | @tsv
-  ' "$GALLERY_STATE" 2>/dev/null || die 'gallery state is malformed'
+    | select(.home_id == $home_id)
+    | select(.url == ("http://127.0.0.1:" + (.port | tostring) + "/"))
+    | [.pid, .port, .token, .url, .home_id] | @tsv
+  ' "$GALLERY_STATE" 2>/dev/null || die 'gallery state is malformed or belongs to another private home'
 }
 
 gallery_process_matches() {
-  local pid=$1 token=$2 command
+  local pid=$1 token=$2 home_id=$3 command
   kill -0 "$pid" 2>/dev/null || return 1
   command="$(ps -ww -p "$pid" -o command= 2>/dev/null)" || return 1
   case "$command" in
-    *"$GALLERY_ENGINE"*"$token"*) return 0 ;;
+    *"$GALLERY_ENGINE"*"$token"*"$home_id"*) return 0 ;;
     *) return 1 ;;
   esac
 }
 
 gallery_probe() {
-  local port=$1 token=$2
+  local port=$1 token=$2 home_id=$3
   require_node
-  node "$GALLERY_ENGINE" probe --port "$port" --token "$token" >/dev/null 2>&1
+  node "$GALLERY_ENGINE" probe --port "$port" --token "$token" --home-id "$home_id" >/dev/null 2>&1
 }
 
 gallery_render() {
@@ -1023,65 +1133,81 @@ gallery_render() {
 }
 
 gallery_start() {
-  local port url state pid token ready attempt existing_pid existing_port existing_token existing_url
+  local port url state pid token ready attempt home_id log_temp state_temp
+  local existing_pid existing_port existing_token existing_url existing_home_id
   validate_library 1
   require_node
   port="$(gallery_port)"
   url="http://$GALLERY_HOST:$port/"
+  home_id="$(gallery_home_id)" || die 'could not derive private gallery home identity'
 
   if [ -e "$GALLERY_RUNTIME" ] || [ -L "$GALLERY_RUNTIME" ]; then
-    [ -d "$GALLERY_RUNTIME" ] || die '.gallery exists but is not a directory'
-    [ ! -L "$GALLERY_RUNTIME" ] || die '.gallery must not be a symlink'
+    require_safe_gallery_runtime
   else
     (umask 077 && mkdir "$GALLERY_RUNTIME") || die 'could not create private gallery runtime directory'
   fi
   chmod 700 "$GALLERY_RUNTIME"
 
-  if state="$(gallery_state_read 2>/dev/null)"; then
-    IFS=$'\t' read -r existing_pid existing_port existing_token existing_url <<<"$state"
-    if gallery_probe "$existing_port" "$existing_token"; then
+  if [ -e "$GALLERY_STATE" ] || [ -L "$GALLERY_STATE" ]; then
+    state="$(gallery_state_read "$home_id")"
+    IFS=$'\t' read -r existing_pid existing_port existing_token existing_url existing_home_id <<<"$state"
+    if gallery_probe "$existing_port" "$existing_token" "$existing_home_id"; then
       printf 'running: %s\n' "$existing_url"
       return 0
     fi
-    if gallery_process_matches "$existing_pid" "$existing_token"; then
+    if gallery_process_matches "$existing_pid" "$existing_token" "$existing_home_id"; then
       die 'the recorded gallery process is alive but not responding; run gallery stop before starting another'
     fi
     rm -f "$GALLERY_STATE"
   fi
 
+  if [ -e "$GALLERY_LOG" ] || [ -L "$GALLERY_LOG" ]; then
+    [ -f "$GALLERY_LOG" ] || die 'gallery log destination must be a regular file'
+    [ ! -L "$GALLERY_LOG" ] || die 'gallery log destination must not be a symlink'
+  fi
+  log_temp="$(mktemp "$GALLERY_RUNTIME/.server-log.XXXXXX")" || die 'could not create private gallery log'
+  chmod 600 "$log_temp"
+  mv "$log_temp" "$GALLERY_LOG"
+
   token="$(node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))')" || die 'could not create gallery identity token'
   ready="$GALLERY_RUNTIME/ready.$token"
   rm -f "$ready"
-  : >"$GALLERY_LOG"
-  chmod 600 "$GALLERY_LOG"
 
   nohup node "$GALLERY_ENGINE" serve \
     --home "$FM_HOME_PHYSICAL" \
     --helper "$SCRIPT_DIR/fm-design-inspiration.sh" \
     --port "$port" \
     --token "$token" \
+    --home-id "$home_id" \
     --ready "$ready" \
     >>"$GALLERY_LOG" 2>&1 </dev/null &
   pid=$!
 
-  if ! (umask 077 && jq -n \
+  state_temp="$(mktemp "$GALLERY_RUNTIME/.server-state.XXXXXX")" || {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    die 'could not create private gallery state staging file'
+  }
+  chmod 600 "$state_temp"
+  if ! jq -n \
     --arg schema 'firstmate.design-inspiration.gallery-runtime/v1' \
     --arg host "$GALLERY_HOST" \
     --arg url "$url" \
     --arg token "$token" \
+    --arg home_id "$home_id" \
     --argjson pid "$pid" \
     --argjson port "$port" \
-    '{schema:$schema,pid:$pid,port:$port,host:$host,url:$url,token:$token}' \
-    >"$GALLERY_STATE.tmp" && mv "$GALLERY_STATE.tmp" "$GALLERY_STATE"); then
+    '{schema:$schema,pid:$pid,port:$port,host:$host,url:$url,token:$token,home_id:$home_id}' \
+    >"$state_temp" || ! mv "$state_temp" "$GALLERY_STATE"; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
-    rm -f "$GALLERY_STATE.tmp" "$ready"
+    rm -f "$state_temp" "$ready"
     die 'could not record private gallery process identity'
   fi
 
   attempt=0
   while [ "$attempt" -lt 80 ]; do
-    if [ -f "$ready" ] && gallery_probe "$port" "$token"; then
+    if [ -f "$ready" ] && gallery_probe "$port" "$token" "$home_id"; then
       printf 'running: %s\n' "$url"
       return 0
     fi
@@ -1090,34 +1216,40 @@ gallery_start() {
     attempt=$((attempt + 1))
   done
 
-  if gallery_process_matches "$pid" "$token"; then
+  if gallery_process_matches "$pid" "$token" "$home_id"; then
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   fi
   rm -f "$GALLERY_STATE" "$ready"
   printf 'fm-design-inspiration: gallery failed to start\n' >&2
-  if [ -s "$GALLERY_LOG" ]; then
+  if [ -f "$GALLERY_LOG" ] && [ -s "$GALLERY_LOG" ]; then
     tail -20 "$GALLERY_LOG" >&2
   fi
   return 1
 }
 
 gallery_status() {
-  local state pid port token url
+  local state pid port token url home_id state_home_id
   require_data_root
   require_library_root_only
   require_jq
   require_node
-  if ! state="$(gallery_state_read)"; then
+  if ! require_safe_gallery_runtime; then
     printf 'stopped\n'
     return 1
   fi
-  IFS=$'\t' read -r pid port token url <<<"$state"
-  if gallery_probe "$port" "$token"; then
+  if [ ! -e "$GALLERY_STATE" ] && [ ! -L "$GALLERY_STATE" ]; then
+    printf 'stopped\n'
+    return 1
+  fi
+  home_id="$(gallery_home_id)" || die 'could not derive private gallery home identity'
+  state="$(gallery_state_read "$home_id")"
+  IFS=$'\t' read -r pid port token url state_home_id <<<"$state"
+  if gallery_probe "$port" "$token" "$state_home_id"; then
     printf 'running: %s (bound %s)\n' "$url" "$GALLERY_HOST"
     return 0
   fi
-  if gallery_process_matches "$pid" "$token"; then
+  if gallery_process_matches "$pid" "$token" "$state_home_id"; then
     printf 'not responding: %s (identity-matched process %s)\n' "$url" "$pid"
   else
     printf 'stopped: stale private record for %s\n' "$url"
@@ -1126,37 +1258,47 @@ gallery_status() {
 }
 
 gallery_stop() {
-  local state pid port token url attempt ready command
+  local state pid port token url attempt ready home_id state_home_id responsive=0
   require_data_root
   require_library_root_only
   require_jq
   require_node
-  if ! state="$(gallery_state_read)"; then
+  if ! require_safe_gallery_runtime; then
     printf 'stopped\n'
     return 0
   fi
-  IFS=$'\t' read -r pid port token url <<<"$state"
+  if [ ! -e "$GALLERY_STATE" ] && [ ! -L "$GALLERY_STATE" ]; then
+    printf 'stopped\n'
+    return 0
+  fi
+  home_id="$(gallery_home_id)" || die 'could not derive private gallery home identity'
+  state="$(gallery_state_read "$home_id")"
+  IFS=$'\t' read -r pid port token url state_home_id <<<"$state"
   ready="$GALLERY_RUNTIME/ready.$token"
 
-  if ! gallery_process_matches "$pid" "$token"; then
+  if ! gallery_process_matches "$pid" "$token" "$state_home_id"; then
     rm -f "$GALLERY_STATE" "$ready"
     printf 'stopped: stale private record for %s\n' "$url"
     return 0
   fi
-  command="$(ps -ww -p "$pid" -o command= 2>/dev/null)" || die "could not re-read gallery process identity: $pid"
-  case "$command" in
-    *"$GALLERY_ENGINE"*"$token"*) ;;
-    *) die "gallery process identity changed before stop: $pid" ;;
-  esac
-  if gallery_probe "$port" "$token"; then
-    node "$GALLERY_ENGINE" stop --port "$port" --token "$token" >/dev/null 2>&1 || true
+  if gallery_probe "$port" "$token" "$state_home_id"; then
+    responsive=1
+    node "$GALLERY_ENGINE" stop --port "$port" --token "$token" --home-id "$state_home_id" >/dev/null 2>&1 || true
   fi
   attempt=0
-  while gallery_process_matches "$pid" "$token" && [ "$attempt" -lt 50 ]; do
+  while [ "$responsive" -eq 1 ] && gallery_process_matches "$pid" "$token" "$state_home_id" && [ "$attempt" -lt 15 ]; do
     sleep 0.1
     attempt=$((attempt + 1))
   done
-  gallery_process_matches "$pid" "$token" && die "identity-matched gallery process did not stop: $pid"
+  if gallery_process_matches "$pid" "$token" "$state_home_id"; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  attempt=0
+  while gallery_process_matches "$pid" "$token" "$state_home_id" && [ "$attempt" -lt 50 ]; do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  gallery_process_matches "$pid" "$token" "$state_home_id" && die "identity-matched gallery process did not stop: $pid"
   rm -f "$GALLERY_STATE" "$ready"
   printf 'stopped: %s\n' "$url"
 }
@@ -1208,12 +1350,17 @@ case "${1:-}" in
         resolve_home_for_library_command
         preferences_export
         ;;
+      check)
+        [ "$#" -eq 3 ] || usage_error 'preferences check requires exactly one file path or dash'
+        resolve_home_for_library_command
+        preferences_check "$3"
+        ;;
       import)
         [ "$#" -eq 3 ] || usage_error 'preferences import requires exactly one file path or dash'
         resolve_home_for_library_command
         preferences_import "$3"
         ;;
-      *) usage_error 'preferences requires export or import' ;;
+      *) usage_error 'preferences requires export, check, or import' ;;
     esac
     ;;
   gallery)

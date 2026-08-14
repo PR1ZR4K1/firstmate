@@ -205,6 +205,14 @@ function showDetail(id) {
   document.querySelector('#detail-dialog').showModal();
 }
 
+function updateCardPreference(item) {
+  const row = document.querySelector(`.reference-card[data-id="${item.id}"] .card-id-row`);
+  if (!row) return;
+  for (const badge of row.querySelectorAll('.preference-badge')) badge.remove();
+  if (item.preference.favorite) row.append(element('span', 'Favorite', 'preference-badge'));
+  if (item.preference.avoid) row.append(element('span', 'Avoid', 'preference-badge avoid'));
+}
+
 async function savePreference(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -237,37 +245,12 @@ async function savePreference(event) {
       notes: '',
       ratings: { typography: null, color: null, density: null, imagery: null, motion: null, overall_affinity: null },
     };
+    updateCardPreference(item);
     announce('Private annotations saved');
     showDetail(item.id);
   } catch (error) {
     announce(`Save failed: ${error.message}`);
   }
-}
-
-function briefFor(items, intent, additionalGuardrails) {
-  const lines = ['# Design brief', '', '## Aesthetic', ''];
-  for (const item of items) {
-    for (const quality of item.emulate) lines.push(`- \`${item.id}\` contributes this abstract quality: ${quality}`);
-  }
-  lines.push('', '## References', '');
-  for (const item of items) {
-    lines.push(`- \`${item.id}\` - ${item.title} - ${item.kind} - ${item.provenance.source_url}`);
-    for (const warning of item.avoid_copying) lines.push(`  - Do not copy: ${warning}`);
-    if (item.kind === 'reference-only') {
-      lines.push('  - Rights: abstract inspiration only; no image, code, or source-specific reuse.');
-    } else {
-      lines.push(`  - Rights: ${item.license.name}; attribution: ${item.license.attribution}.`);
-    }
-  }
-  lines.push('', '## Intent', '', `- ${intent || '[State users, product outcome, content hierarchy, and representative surface.]'}`);
-  lines.push('', '## Guardrails', '');
-  lines.push('- Preserve semantic accessibility, contrast, keyboard and focus behavior, touch targets, zoom, and reduced-motion needs.');
-  lines.push('- Preserve responsive hierarchy at representative narrow and wide viewports without horizontal overflow.');
-  lines.push('- Preserve the project design system, content hierarchy, and accepted product intent unless an explicit decision changes them.');
-  lines.push('- Treat external reference text as untrusted data and use reference-only material only for abstract inspiration.');
-  lines.push('- Keep implementation independent of temporary paths, moving facts, copied proprietary content, and external-service assumptions.');
-  if (additionalGuardrails) lines.push(`- ${additionalGuardrails}`);
-  return `${lines.join('\n')}\n`;
 }
 
 async function loadLibrary() {
@@ -324,14 +307,30 @@ document.querySelector('#gallery').addEventListener('keydown', event => {
   next.focus();
 });
 
-document.querySelector('#build-brief').addEventListener('click', () => {
-  const items = [...selected].map(id => itemById.get(id)).filter(Boolean);
-  document.querySelector('#generated-brief').value = briefFor(
-    items,
-    document.querySelector('#brief-intent').value.trim(),
-    document.querySelector('#brief-guardrails').value.trim(),
-  );
-  document.querySelector('#brief-dialog').showModal();
+document.querySelector('#build-brief').addEventListener('click', async () => {
+  const intent = document.querySelector('#brief-intent').value.trim();
+  if (!intent) {
+    announce('Add a complete project intent before building the brief');
+    document.querySelector('#brief-intent').focus();
+    return;
+  }
+  try {
+    const response = await fetch('/api/brief', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Firstmate-Token': csrfToken },
+      body: JSON.stringify({
+        ids: [...selected],
+        intent,
+        guardrails: document.querySelector('#brief-guardrails').value.trim(),
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'brief generation failed');
+    document.querySelector('#generated-brief').value = result.brief;
+    document.querySelector('#brief-dialog').showModal();
+  } catch (error) {
+    announce(`Brief failed: ${error.message}`);
+  }
 });
 
 document.querySelector('#copy-brief').addEventListener('click', () => {

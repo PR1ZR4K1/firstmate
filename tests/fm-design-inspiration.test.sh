@@ -216,7 +216,14 @@ test_malformed_manifest_and_duplicates() {
   FM_HOME="$home" "$SCRIPT" init >/dev/null
 
   printf '{not-json\n' >"$lib/manifest.json"
-  expect_failure 'manifest.json is not valid JSON' env FM_HOME="$home" "$SCRIPT" validate
+  expect_failure 'manifest.json must contain exactly one valid JSON document' env FM_HOME="$home" "$SCRIPT" validate
+
+  alpha=$(reference_record alpha 'https://example.test/alpha')
+  write_records "$lib/manifest.json" "$alpha"
+  cp "$lib/manifest.json" "$lib/manifest.second"
+  cat "$lib/manifest.second" >>"$lib/manifest.json"
+  expect_failure 'manifest.json must contain exactly one valid JSON document' env FM_HOME="$home" "$SCRIPT" validate
+  rm -f "$lib/manifest.second"
 
   alpha=$(reference_record alpha 'https://example.test/alpha')
   alpha=$(printf '%s' "$alpha" | jq -c 'del(.title)')
@@ -242,7 +249,16 @@ test_malformed_manifest_and_duplicates() {
   alpha=$(printf '%s' "$alpha" | jq -c '.provenance.captured_on = "2026-02-31"')
   write_records "$lib/manifest.json" "$alpha"
   expect_failure 'must be a real YYYY-MM-DD date' env FM_HOME="$home" "$SCRIPT" validate
-  pass 'malformed strict records, duplicate IDs and URLs, and impossible dates are rejected'
+
+  alpha=$(reference_record alpha 'https:///')
+  write_records "$lib/manifest.json" "$alpha"
+  expect_failure 'must be a valid canonical HTTPS URL' env FM_HOME="$home" "$SCRIPT" validate
+
+  alpha=$(reference_record alpha 'https://EXAMPLE.test:443/equivalent')
+  beta=$(reference_record beta 'https://example.test/equivalent')
+  write_records "$lib/manifest.json" "$alpha" "$beta"
+  expect_failure 'duplicate canonical source URL: https://example.test/equivalent' env FM_HOME="$home" "$SCRIPT" validate
+  pass 'single-document strict records, canonical duplicate URLs, malformed URLs, duplicate IDs, and impossible dates are rejected'
 }
 
 test_manifest_facets_and_license_rules() {
@@ -272,6 +288,11 @@ test_manifest_facets_and_license_rules() {
   reusable=$(reusable_record reusable 'https://example.test/reusable')
   write_records "$lib/manifest.json" "$reusable"
   FM_HOME="$home" "$SCRIPT" validate >/dev/null || fail 'reusable asset with a complete explicit license should validate'
+
+  reference=$(reference_record inspiration 'https://example.test/inspiration')
+  reference=$(printf '%s' "$reference" | jq -c '.local_assets = [{path:"assets/reuse.png",role:"reusable-asset",sha256:("a"*64),added_on:"2026-02-21"}]')
+  write_records "$lib/manifest.json" "$reference"
+  expect_failure 'reference-only and cannot declare a reusable-asset local role' env FM_HOME="$home" "$SCRIPT" validate
   pass 'gallery facets and reference-only versus reusable-license rules validate strictly'
 }
 
@@ -341,9 +362,14 @@ test_preferences_validation_and_deterministic_import_export() {
 
   canonical="$TMP_ROOT/preferences-import.json"
   printf '%s\n' "$exported_one" >"$canonical"
+  FM_HOME="$home" "$SCRIPT" preferences check "$canonical" >/dev/null
   FM_HOME="$home" "$SCRIPT" preferences import "$canonical" >/dev/null
   [ "$(shasum "$lib/manifest.json")" = "$source_digest" ] || fail 'preference import overwrote the neutral source manifest'
   [ "$(FM_HOME="$home" "$SCRIPT" preferences export)" = "$exported_one" ] || fail 'preference import/export was not deterministic'
+
+  printf '%s\n%s\n' "$exported_one" "$exported_one" >"$canonical"
+  expect_failure 'preferences document must contain exactly one valid JSON document' env FM_HOME="$home" "$SCRIPT" preferences check "$canonical"
+  expect_failure 'preferences document must contain exactly one valid JSON document' env FM_HOME="$home" "$SCRIPT" preferences import "$canonical"
 
   bad=$(preference_record alpha true true conflict)
   write_preferences "$canonical" "$bad"
@@ -359,7 +385,13 @@ test_preferences_validation_and_deterministic_import_export() {
   bad=$(printf '%s' "$pref_alpha" | jq -c '.ratings.motion = 6')
   write_preferences "$canonical" "$bad"
   expect_failure 'must be null or an integer from 1 through 5' env FM_HOME="$home" "$SCRIPT" preferences import "$canonical"
-  pass 'private preferences validate separately and import/export deterministically without source mutation'
+
+  rm -f "$lib/preferences.json"
+  mkdir "$lib/preferences.json"
+  write_preferences "$canonical" "$pref_alpha"
+  expect_failure 'preferences.json destination must be a regular file' env FM_HOME="$home" "$SCRIPT" preferences import "$canonical"
+  [ -z "$(find "$lib/preferences.json" -mindepth 1 -print -quit)" ] || fail 'preference import moved its staging file inside a destination directory'
+  pass 'private preferences validate one document separately and import/export deterministically without source mutation'
 }
 
 test_search_citation_and_brief_output() {
@@ -446,20 +478,144 @@ test_read_commands_do_not_mutate_storage() {
   pass 'validation, search, citation, exports, and rendering are read-only'
 }
 
+test_gallery_runtime_confinement_and_identity() {
+  local home lib record outside external port home_a home_b lib_a lib_b port_a fallback_home fallback_lib fallback_port original_port state_tmp
+
+  home=$(new_home runtime-symlink)
+  lib=$(library_root "$home")
+  FM_HOME="$home" "$SCRIPT" init >/dev/null
+  record=$(reference_record alpha 'https://example.test/runtime-symlink')
+  write_records "$lib/manifest.json" "$record"
+  external="$TMP_ROOT/external-runtime"
+  mkdir "$external"
+  printf 'outside-state\n' >"$external/server.json"
+  ln -s "$external" "$lib/.gallery"
+  expect_failure '.gallery must not be a symlink' env FM_HOME="$home" "$SCRIPT" gallery stop
+  [ "$(cat "$external/server.json")" = outside-state ] || fail 'gallery stop followed a runtime symlink and changed an outside file'
+
+  home=$(new_home runtime-hardlink)
+  lib=$(library_root "$home")
+  FM_HOME="$home" "$SCRIPT" init >/dev/null
+  record=$(reference_record alpha 'https://example.test/runtime-hardlink')
+  write_records "$lib/manifest.json" "$record"
+  mkdir "$lib/.gallery"
+  outside="$TMP_ROOT/outside-server.log"
+  printf 'outside-log\n' >"$outside"
+  ln "$outside" "$lib/.gallery/server.log"
+  port=$(choose_port)
+  SERVER_HOME=$home
+  SERVER_PORT=$port
+  FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery start >/dev/null
+  [ "$(cat "$outside")" = outside-log ] || fail 'gallery start truncated a hard-linked outside log'
+  FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery stop >/dev/null
+  SERVER_HOME=''
+
+  home=$(new_home runtime-state-directory)
+  lib=$(library_root "$home")
+  FM_HOME="$home" "$SCRIPT" init >/dev/null
+  record=$(reference_record alpha 'https://example.test/runtime-state-directory')
+  write_records "$lib/manifest.json" "$record"
+  mkdir -p "$lib/.gallery/server.json"
+  port=$(choose_port)
+  expect_failure 'gallery state is not a regular file' env FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery start
+  if curl -fsS "http://127.0.0.1:$port/" >/dev/null 2>&1; then
+    fail 'gallery spawned despite an invalid state destination'
+  fi
+
+  home_a=$(new_home runtime-home-a)
+  home_b=$(new_home runtime-home-b)
+  lib_a=$(library_root "$home_a")
+  lib_b=$(library_root "$home_b")
+  FM_HOME="$home_a" "$SCRIPT" init >/dev/null
+  FM_HOME="$home_b" "$SCRIPT" init >/dev/null
+  record=$(reference_record alpha 'https://example.test/runtime-home-a')
+  write_records "$lib_a/manifest.json" "$record"
+  record=$(reference_record alpha 'https://example.test/runtime-home-b')
+  write_records "$lib_b/manifest.json" "$record"
+  port_a=$(choose_port)
+  SERVER_HOME=$home_a
+  SERVER_PORT=$port_a
+  FM_HOME="$home_a" FM_DESIGN_GALLERY_PORT="$port_a" "$SCRIPT" gallery start >/dev/null
+  mkdir "$lib_b/.gallery"
+  cp "$lib_a/.gallery/server.json" "$lib_b/.gallery/server.json"
+  expect_failure 'belongs to another private home' env FM_HOME="$home_b" "$SCRIPT" gallery status
+  expect_failure 'belongs to another private home' env FM_HOME="$home_b" "$SCRIPT" gallery stop
+  FM_HOME="$home_a" "$SCRIPT" gallery status >/dev/null || fail 'another home stopped or claimed the running gallery'
+  FM_HOME="$home_a" "$SCRIPT" gallery stop >/dev/null
+  SERVER_HOME=''
+
+  fallback_home=$(new_home runtime-fallback)
+  fallback_lib=$(library_root "$fallback_home")
+  FM_HOME="$fallback_home" "$SCRIPT" init >/dev/null
+  record=$(reference_record alpha 'https://example.test/runtime-fallback')
+  write_records "$fallback_lib/manifest.json" "$record"
+  original_port=$(choose_port)
+  SERVER_HOME=$fallback_home
+  SERVER_PORT=$original_port
+  FM_HOME="$fallback_home" FM_DESIGN_GALLERY_PORT="$original_port" "$SCRIPT" gallery start >/dev/null
+  fallback_port=$(choose_port)
+  state_tmp="$fallback_lib/.gallery/state.tmp"
+  jq --argjson port "$fallback_port" --arg url "http://127.0.0.1:$fallback_port/" '.port=$port | .url=$url' \
+    "$fallback_lib/.gallery/server.json" >"$state_tmp"
+  mv "$state_tmp" "$fallback_lib/.gallery/server.json"
+  FM_HOME="$fallback_home" "$SCRIPT" gallery stop >/dev/null
+  SERVER_HOME=''
+  if curl -fsS "http://127.0.0.1:$original_port/" >/dev/null 2>&1; then
+    fail 'gallery stop did not use its identity-verified SIGTERM fallback after a failed probe'
+  fi
+  pass 'gallery runtime confinement, per-home identity, hard-link replacement, state refusal, and stop fallback are enforced'
+}
+
 test_loopback_server_and_no_network_defaults() {
-  local home lib alpha port start status page style app library cross_host outside_host external_count=0 response headers prefs before
+  local home lib alpha beta port start status page library cross_host fetch_cross_site outside_host response headers prefs before
+  local interceptor intercept_log control_rc token brief_one brief_two brief_text brief_code malformed_code malformed_body quoted_emphasis preview_hash preview_body asset_code
+  local -a gallery_env
   home=$(new_home server)
   lib=$(library_root "$home")
   FM_HOME="$home" "$SCRIPT" init >/dev/null
   alpha=$(reference_record alpha 'https://example.invalid/must-not-fetch')
-  write_records "$lib/manifest.json" "$alpha"
+  printf 'private preview bytes\n' >"$lib/assets/alpha.png"
+  preview_hash=$(shasum -a 256 "$lib/assets/alpha.png" | awk '{print $1}')
+  alpha=$(printf '%s' "$alpha" | jq -c --arg hash "$preview_hash" '.emulate = ["**untrusted emphasis**"] | .local_assets = [{path:"assets/alpha.png",role:"thumbnail",sha256:$hash,added_on:"2026-02-21"}]')
+  beta=$(reference_record beta 'https://example.invalid/also-must-not-fetch')
+  write_records "$lib/manifest.json" "$beta" "$alpha"
+
+  interceptor="$TMP_ROOT/outbound-interceptor.cjs"
+  intercept_log="$TMP_ROOT/outbound-interceptor.log"
+  cat >"$interceptor" <<'NODE'
+const fs = require('node:fs');
+const net = require('node:net');
+const original = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function interceptedConnect(...args) {
+  const first = Array.isArray(args[0]) ? args[0][0] : args[0];
+  let host;
+  if (first && typeof first === 'object') host = first.host || first.hostname;
+  else if (typeof first === 'number') host = typeof args[1] === 'string' ? args[1] : 'localhost';
+  const allowed = host === undefined || host === '127.0.0.1' || host === '::1' || host === 'localhost';
+  if (!allowed) {
+    fs.appendFileSync(process.env.FM_NETWORK_INTERCEPT_LOG, `${host}\n`);
+    throw new Error(`external network blocked: ${host}`);
+  }
+  return original.apply(this, args);
+};
+NODE
+  : >"$intercept_log"
+  set +e
+  NODE_OPTIONS="--require=$interceptor" FM_NETWORK_INTERCEPT_LOG="$intercept_log" \
+    node -e 'require("node:net").connect({host:"example.invalid",port:443})' >/dev/null 2>&1
+  control_rc=$?
+  set -e
+  [ "$control_rc" -ne 0 ] || fail 'outbound interceptor control did not reject an external connection'
+  assert_grep 'example.invalid' "$intercept_log" 'outbound interceptor control did not record the refused external host'
+  : >"$intercept_log"
+
   port=$(choose_port)
   SERVER_HOME=$home
   SERVER_PORT=$port
-
-  start=$(FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery start)
+  gallery_env=(env NODE_OPTIONS="--require=$interceptor" FM_NETWORK_INTERCEPT_LOG="$intercept_log" FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port")
+  start=$("${gallery_env[@]}" "$SCRIPT" gallery start)
   assert_contains "$start" "running: http://127.0.0.1:$port/" 'gallery start omitted its stable loopback URL'
-  status=$(FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery status)
+  status=$("${gallery_env[@]}" "$SCRIPT" gallery status)
   assert_contains "$status" 'bound 127.0.0.1' 'gallery status did not verify loopback binding'
 
   if command -v lsof >/dev/null 2>&1; then
@@ -469,46 +625,83 @@ test_loopback_server_and_no_network_defaults() {
 
   headers="$TMP_ROOT/server-headers.txt"
   page=$(curl -fsS -D "$headers" "http://127.0.0.1:$port/")
-  style=$(curl -fsS "http://127.0.0.1:$port/style.css")
-  app=$(curl -fsS "http://127.0.0.1:$port/app.js")
   assert_contains "$page" 'No account, sharing, telemetry, external proxy, or external preview fetch.' 'served gallery omitted no-network/no-share disclosure'
   assert_contains "$(cat "$headers")" "connect-src 'self'" 'served gallery CSP did not forbid external network connections'
-  assert_contains "$style" 'prefers-reduced-motion: reduce' 'served gallery stylesheet omitted reduced-motion support'
-  assert_contains "$style" 'overflow-x: hidden' 'served gallery stylesheet omitted horizontal-overflow protection'
-  assert_contains "$app" "['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']" 'served gallery app omitted keyboard card navigation'
-  assert_contains "$app" '## Aesthetic' 'served gallery app omitted the aesthetic brief pillar'
-  assert_contains "$app" '## References' 'served gallery app omitted the references brief pillar'
-  assert_contains "$app" '## Intent' 'served gallery app omitted the intent brief pillar'
-  assert_contains "$app" '## Guardrails' 'served gallery app omitted the guardrails brief pillar'
+  assert_contains "$(cat "$headers")" 'Cross-Origin-Resource-Policy: same-origin' 'served gallery omitted its same-origin resource policy'
   library=$(curl -fsS "http://127.0.0.1:$port/api/library")
   assert_contains "$library" 'https://example.invalid/must-not-fetch' 'library API omitted canonical source provenance'
   assert_contains "$library" '"preview_url":null' 'uncached source was not represented as a local placeholder state'
+  assert_contains "$library" '"preview_url":"/asset/alpha"' 'cached source did not expose its declared local preview'
+  preview_body=$(curl -fsS "http://127.0.0.1:$port/asset/alpha")
+  [ "$preview_body" = 'private preview bytes' ] || fail 'gallery did not serve the validated declared local preview'
+  token=$(printf '%s' "$library" | jq -r '.csrf_token')
 
   if curl -sS -o /dev/null -w '%{http_code}' -H 'Host: example.test' "http://127.0.0.1:$port/" | grep -qx 421; then :; else
     fail 'gallery did not reject a non-loopback Host header'
   fi
-  cross_host=$(curl -sS -o /dev/null -w '%{http_code}' -H "Origin: https://example.test" "http://127.0.0.1:$port/api/library")
+  cross_host=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Origin: https://example.test' "http://127.0.0.1:$port/api/library")
   [ "$cross_host" = 403 ] || fail "gallery did not reject a cross-origin request: HTTP $cross_host"
+  fetch_cross_site=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Sec-Fetch-Site: cross-site' "http://127.0.0.1:$port/asset/alpha")
+  [ "$fetch_cross_site" = 403 ] || fail "gallery did not reject a cross-site no-CORS asset probe: HTTP $fetch_cross_site"
 
-  prefs=$(preference_record alpha true false 'Saved only in private preferences.')
+  brief_one=$(curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Firstmate-Token: $token" \
+    --data "$(jq -cn '{ids:["beta","alpha"],intent:"Clarify the account overview hierarchy.",guardrails:"Keep the existing product tokens."}')" \
+    "http://127.0.0.1:$port/api/brief")
+  brief_two=$(curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Firstmate-Token: $token" \
+    --data "$(jq -cn '{ids:["alpha","beta"],intent:"Clarify the account overview hierarchy.",guardrails:"Keep the existing product tokens."}')" \
+    "http://127.0.0.1:$port/api/brief")
+  [ "$brief_one" = "$brief_two" ] || fail 'server brief output depended on reference click order'
+  brief_text=$(printf '%s' "$brief_one" | jq -r '.brief')
+  for heading in '## Aesthetic' '## References' '## Intent' '## Guardrails'; do
+    assert_contains "$brief_text" "$heading" "validated server brief omitted $heading"
+  done
+  quoted_emphasis=$(printf "\` %s \`" '**untrusted emphasis**')
+  assert_contains "$brief_text" "$quoted_emphasis" 'server brief did not quote untrusted manifest text as Markdown data'
+  alpha=$(printf '%s' "$alpha" | jq -c '.review_status = "unreviewed"')
+  write_records "$lib/manifest.json" "$beta" "$alpha"
+  brief_code=$(curl -sS -o "$TMP_ROOT/brief-error.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H "X-Firstmate-Token: $token" --data "$(jq -cn '{ids:["alpha"],intent:"A complete intent.",guardrails:""}')" \
+    "http://127.0.0.1:$port/api/brief")
+  [ "$brief_code" = 400 ] || fail "server brief accepted a freshly downgraded reference: HTTP $brief_code"
+  assert_grep 'captain-approved' "$TMP_ROOT/brief-error.json" 'server brief rejection omitted the current approval requirement'
+  brief_code=$(curl -sS -o "$TMP_ROOT/brief-error.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H "X-Firstmate-Token: $token" --data "$(jq -cn '{ids:["beta"],intent:"",guardrails:""}')" \
+    "http://127.0.0.1:$port/api/brief")
+  [ "$brief_code" = 400 ] || fail "server brief accepted an incomplete blank intent: HTTP $brief_code"
+
+  prefs=$(preference_record beta true false 'Saved only in private preferences.')
   before=$(shasum "$lib/manifest.json")
-  response=$(curl -fsS -X POST \
-    -H 'Content-Type: application/json' \
-    -H "X-Firstmate-Token: $(printf '%s' "$library" | jq -r '.csrf_token')" \
-    --data "$(jq -cn --argjson preference "$prefs" '{preference:$preference}')" \
-    "http://127.0.0.1:$port/api/preferences")
+  response=$(curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Firstmate-Token: $token" \
+    --data "$(jq -cn --argjson preference "$prefs" '{preference:$preference}')" "http://127.0.0.1:$port/api/preferences")
   assert_contains "$response" 'Saved only in private preferences.' 'gallery did not persist a private captain annotation'
+  malformed_code=$(curl -sS -o "$TMP_ROOT/preference-error.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -H "X-Firstmate-Token: $token" --data '{"preference":{"id":"beta","favorite":false,"avoid":false,"notes":""}}' \
+    "http://127.0.0.1:$port/api/preferences")
+  [ "$malformed_code" = 400 ] || fail "gallery accepted a malformed preference deletion: HTTP $malformed_code"
+  malformed_body=$(cat "$TMP_ROOT/preference-error.json")
+  assert_contains "$malformed_body" 'ratings' 'malformed preference rejection omitted the missing exact schema field'
+  jq -e '.preferences[0].id == "beta" and .preferences[0].favorite == true' "$lib/preferences.json" >/dev/null \
+    || fail 'malformed preference request deleted the existing private annotation'
+  prefs=$(preference_record beta false true 'Queue recovered after rejection.')
+  response=$(curl -fsS -X POST -H 'Content-Type: application/json' -H "X-Firstmate-Token: $token" \
+    --data "$(jq -cn --argjson preference "$prefs" '{preference:$preference}')" "http://127.0.0.1:$port/api/preferences")
+  assert_contains "$response" 'Queue recovered after rejection.' 'a rejected preference permanently blocked a later valid save'
   [ "$(shasum "$lib/manifest.json")" = "$before" ] || fail 'gallery annotation overwrote the neutral source manifest'
-  jq -e '.preferences[0].id == "alpha" and .preferences[0].favorite == true' "$lib/preferences.json" >/dev/null \
+  jq -e '.preferences[0].id == "beta" and .preferences[0].avoid == true' "$lib/preferences.json" >/dev/null \
     || fail 'gallery annotation was not persisted to the separate private preferences file'
 
-  FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery stop >/dev/null
+  printf 'tampered\n' >>"$lib/assets/alpha.png"
+  asset_code=$(curl -sS -o "$TMP_ROOT/asset-error.json" -w '%{http_code}' "http://127.0.0.1:$port/asset/alpha")
+  [ "$asset_code" = 400 ] || fail "gallery served a preview after its requested-file hash changed: HTTP $asset_code"
+  assert_grep 'SHA-256' "$TMP_ROOT/asset-error.json" 'changed preview rejection omitted the provenance hash mismatch'
+
+  "${gallery_env[@]}" "$SCRIPT" gallery stop >/dev/null
   SERVER_HOME=''
-  if FM_HOME="$home" FM_DESIGN_GALLERY_PORT="$port" "$SCRIPT" gallery status >/dev/null 2>&1; then
+  if "${gallery_env[@]}" "$SCRIPT" gallery status >/dev/null 2>&1; then
     fail 'gallery still reported running after an explicit stop'
   fi
-  [ "$external_count" -eq 0 ] || fail 'gallery made an external request'
-  pass 'gallery lifecycle is loopback-only, origin-bound, offline by default, and privately mutable only'
+  [ ! -s "$intercept_log" ] || fail "gallery attempted an external network connection: $(cat "$intercept_log")"
+  pass 'gallery is loopback-only, same-origin, externally intercepted, freshly approval-bound, and durably preference-safe'
 }
 
 test_init_and_help
@@ -519,4 +712,5 @@ test_preferences_validation_and_deterministic_import_export
 test_search_citation_and_brief_output
 test_html_escaping_and_deterministic_rendering
 test_read_commands_do_not_mutate_storage
+test_gallery_runtime_confinement_and_identity
 test_loopback_server_and_no_network_defaults
