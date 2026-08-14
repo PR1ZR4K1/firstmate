@@ -147,9 +147,9 @@ new_case() {
   printf '%s\n' "$dir"
 }
 
-# add_ship_task <case-dir> <id> [harness]
+# add_ship_task <case-dir> <id> [harness] [canonical|raw]
 add_ship_task() {
-  local dir=$1 id=$2 harness=${3:-claude}
+  local dir=$1 id=$2 harness=${3:-claude} provenance=${4:-canonical}
   local home="$dir/home" proj="$dir/proj" wt="$dir/wt"
   fm_git_worktree "$proj" "$wt" "task-$id"
   mkdir -p "$home/data/$id"
@@ -160,6 +160,7 @@ add_ship_task() {
     echo "worktree=$wt"
     echo "project=$proj"
     echo "harness=$harness"
+    echo "launch_provenance=$provenance"
     echo "kind=ship"
     echo "mode=no-mistakes"
     echo "yolo=off"
@@ -195,6 +196,13 @@ run_spawn() {  # <case-dir> <args...>
 
 meta_field() {  # <case-dir> <id> <key>
   grep "^$3=" "$1/home/state/$2.meta" | tail -1 | cut -d= -f2-
+}
+
+set_launch_provenance() {  # <case-dir> <id> <canonical|raw|legacy>
+  local meta="$1/home/state/$2.meta" value=$3
+  awk -F= '$1 != "launch_provenance"' "$meta" > "$meta.tmp"
+  [ "$value" = legacy ] || printf 'launch_provenance=%s\n' "$value" >> "$meta.tmp"
+  mv "$meta.tmp" "$meta"
 }
 
 journal_field() {  # <case-dir> <id> <key>
@@ -305,8 +313,8 @@ test_pi_family_relaunch_keeps_scoped_project_trust_and_identity() {
     (
       cd "$dir/wt" || exit 1
       FM_FAKE_PI_ARGV_LOG="$argv_log" bash -c "$launch"
-    )
-    python3 - "$argv_log" "$dir/home/state/$id.pi-ext.ts" "$harness" <<'PY'
+    ) || fail "$harness relaunch command did not execute through the selected binary"
+    if ! python3 - "$argv_log" "$dir/home/state/$id.pi-ext.ts" "$harness" <<'PY'
 import sys
 path, extension, harness = sys.argv[1:]
 args = [part.decode() for part in open(path, "rb").read().split(b"\0") if part]
@@ -318,10 +326,56 @@ if args.count("--approve") != 1:
 if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
     raise SystemExit(f"{harness} relaunch lost its typed launch brief")
 PY
+    then
+      fail "$harness relaunch argv assertion failed"
+    fi
     [ "$(meta_field "$dir" "$id" worktree)" = "$dir/wt" ] \
       || fail "$harness relaunch moved outside its recorded isolated worktree"
   done
   pass "safe Pi and pi-signed relaunches each keep their recorded isolated worktree and receive one process-local --approve"
+}
+
+test_pi_raw_and_legacy_provenance_require_explicit_replacement() {
+  local scenario dir id out rc
+  for scenario in raw legacy; do
+    id="rl-pi-$scenario"
+    dir=$(new_case "pi-$scenario-provenance" "$id")
+    add_ship_task "$dir" "$id" pi
+    set_launch_provenance "$dir" "$id" "$scenario"
+    printf 'pi' > "$dir/fake/command"
+    printf 'pi' > "$dir/fake/becomes"
+    cp "$dir/home/state/$id.meta" "$dir/meta.before"
+
+    out=$(run_control "$dir" "$id" relaunch --note "continue without broadening trust"); rc=$?
+    expect_code 1 "$rc" "$scenario Pi provenance should require an explicit replacement"
+    case "$scenario" in
+      raw) assert_contains "$out" "launched from a raw command" "raw Pi provenance refusal lost its cause" ;;
+      legacy) assert_contains "$out" "legacy Pi-family task" "legacy Pi provenance refusal lost its cause" ;;
+    esac
+    assert_contains "$out" "explicit --harness" \
+      "$scenario Pi provenance refusal did not name the deliberate replacement path"
+    cmp -s "$dir/home/state/$id.meta" "$dir/meta.before" \
+      || fail "$scenario Pi provenance refusal changed task metadata"
+    [ "$(cat "$dir/fake/command")" = pi ] \
+      || fail "$scenario Pi provenance refusal stopped the running agent"
+    [ ! -s "$dir/fake/literal" ] \
+      || fail "$scenario Pi provenance refusal delivered lifecycle input or project trust"
+    [ ! -e "$dir/home/state/$id.control-relaunch" ] \
+      || fail "$scenario Pi provenance refusal created a relaunch journal"
+  done
+
+  id=rl-pi-raw-explicit
+  dir=$(new_case pi-raw-explicit "$id")
+  add_ship_task "$dir" "$id" pi raw
+  printf 'pi' > "$dir/fake/command"
+  printf 'pi' > "$dir/fake/becomes"
+  out=$(run_control "$dir" "$id" relaunch --harness pi --note "deliberately select canonical Pi"); rc=$?
+  expect_code 0 "$rc" "an explicit canonical replacement for raw Pi provenance should succeed"$'\n'"$out"
+  [ "$(meta_field "$dir" "$id" launch_provenance)" = canonical ] \
+    || fail "explicit canonical Pi replacement did not publish canonical provenance"
+  assert_grep " --approve " "$dir/fake/literal" \
+    "explicit canonical Pi replacement did not receive process-local project trust"
+  pass "raw and legacy Pi provenance refuse before stop unless an explicit canonical replacement is selected"
 }
 
 test_relaunch_preserves_durable_task_metadata() {
@@ -501,7 +555,7 @@ test_harness_switch_does_not_carry_the_old_profile_axes() {
 test_harness_switch_resolves_a_prefixed_recorded_harness() {
   local dir out rc auth
   dir=$(new_case prefixcontrol rl32)
-  add_ship_task "$dir" rl32 grok-2
+  add_ship_task "$dir" rl32 grok-2 raw
   printf 'grok-2' > "$dir/fake/command"
   mkdir -p "$dir/grokhome/hooks/fm-turn-end.d"
   printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl32.grok-turnend-token"
@@ -528,7 +582,7 @@ test_harness_switch_resolves_a_prefixed_recorded_harness() {
 test_prefixed_recorded_harness_requires_explicit_replacement() {
   local dir out rc meta brief
   dir=$(new_case prefixrefuse rl34)
-  add_ship_task "$dir" rl34 grok-2
+  add_ship_task "$dir" rl34 grok-2 raw
   printf 'grok-2' > "$dir/fake/command"
   meta="$dir/home/state/rl34.meta"
   brief="$dir/home/data/rl34/brief.md"
@@ -537,11 +591,11 @@ test_prefixed_recorded_harness_requires_explicit_replacement() {
 
   out=$(run_control "$dir" rl34 relaunch --note "continue safely"); rc=$?
   expect_code 1 "$rc" "implicit relaunch from a prefixed command should refuse"
-  assert_contains "$out" "original launch command cannot be reconstructed from its recorded basename" \
+  assert_contains "$out" "launched from a raw command" \
     "the refusal should name the missing launch identity"
-  assert_contains "$out" "would substitute the canonical adapter 'grok'" \
+  assert_contains "$out" "cannot reconstruct the original launch" \
     "the refusal should name the unsafe substitution"
-  assert_contains "$out" "Pass an explicit --harness" \
+  assert_contains "$out" "pass an explicit --harness" \
     "the refusal should name the deliberate replacement path"
   cmp -s "$meta" "$dir/meta.before" \
     || fail "a refused prefixed relaunch must leave metadata byte-identical"
@@ -844,7 +898,7 @@ test_spawn_relaunch_without_a_harness_reuses_the_recorded_one() {
 test_prefixed_prior_harness_wiring_is_still_retired() {
   local dir auth
   dir=$(new_case prefixwiring rl30)
-  add_ship_task "$dir" rl30 grok-2
+  add_ship_task "$dir" rl30 grok-2 raw
   mkdir -p "$dir/grokhome/hooks/fm-turn-end.d"
   printf 'fm.abcdefabcdef\n' > "$dir/home/state/rl30.grok-turnend-token"
   auth="$dir/grokhome/hooks/fm-turn-end.d/fm.abcdefabcdef"
@@ -1338,6 +1392,27 @@ test_spawn_relaunch_refuses_an_unrecorded_task() {
   pass "fm-spawn --relaunch: an unrecorded task is refused"
 }
 
+test_spawn_relaunch_refuses_raw_and_legacy_pi_provenance_without_explicit_selection() {
+  local scenario dir id out rc
+  for scenario in raw legacy; do
+    id="spawn-pi-$scenario"
+    dir=$(new_case "spawn-pi-$scenario" "$id")
+    add_ship_task "$dir" "$id" pi
+    set_launch_provenance "$dir" "$id" "$scenario"
+    printf 'zsh' > "$dir/fake/command"
+
+    out=$(run_spawn "$dir" "$id" --relaunch); rc=$?
+    expect_code 1 "$rc" "direct relaunch should refuse $scenario Pi provenance without an explicit adapter"
+    case "$scenario" in
+      raw) assert_contains "$out" "launched from a raw command" "direct raw Pi refusal lost its cause" ;;
+      legacy) assert_contains "$out" "legacy Pi-family task" "direct legacy Pi refusal lost its cause" ;;
+    esac
+    [ ! -s "$dir/fake/literal" ] \
+      || fail "direct $scenario Pi relaunch typed a launch command or project-trust grant"
+  done
+  pass "fm-spawn --relaunch: raw and legacy Pi provenance cannot gain project trust by inference"
+}
+
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   local dir out rc
   dir=$(new_case wrongcwd rl18)
@@ -1354,6 +1429,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_pi_family_relaunch_keeps_scoped_project_trust_and_identity
+test_pi_raw_and_legacy_provenance_require_explicit_replacement
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
@@ -1397,4 +1473,5 @@ test_promotion_participates_in_the_lifecycle_lock_before_metadata_resolution
 test_spawn_relaunch_refuses_a_live_agent
 test_spawn_relaunch_refuses_contradicting_flags
 test_spawn_relaunch_refuses_an_unrecorded_task
+test_spawn_relaunch_refuses_raw_and_legacy_pi_provenance_without_explicit_selection
 test_spawn_relaunch_refuses_a_pane_outside_the_worktree

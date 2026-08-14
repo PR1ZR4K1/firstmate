@@ -5,7 +5,7 @@
 # These cells prove every supported spawn backend preserves the complete line as
 # one literal argument, including Pi's standalone --approve token and quoted
 # model/executable values, without teaching any backend about project trust.
-set -u
+set -eu
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -42,8 +42,10 @@ SH
   chmod +x "$fakebin/tmux"
   FM_ARGV_LOG="$log" PATH="$fakebin:$PATH" \
     bash -c 'FM_BACKEND_LIB_DIR="$1/bin"; . "$1/bin/backends/tmux.sh"; fm_backend_tmux_send_literal session:worker "$2"' \
-      _ "$ROOT" "$PAYLOAD"
-  assert_argv "$log" tmux send-keys -t session:worker -l "$PAYLOAD"
+      _ "$ROOT" "$PAYLOAD" \
+    || fail "tmux literal transport invocation failed"
+  assert_argv "$log" tmux send-keys -t session:worker -l "$PAYLOAD" \
+    || fail "tmux literal transport assertion failed"
   pass "tmux transports the guarded Pi worker launch line as one literal payload"
 }
 
@@ -54,8 +56,10 @@ test_herdr_literal_transport() {
     fm_backend_herdr_target_ready() { fm_backend_herdr_parse_target "$1"; }
     fm_backend_herdr_cli() { printf "%s\0" "$@" > "$FM_ARGV_LOG"; }
     fm_backend_herdr_send_literal fleet:w1:p2 "$2"
-  ' _ "$ROOT" "$PAYLOAD"
-  assert_argv "$log" herdr fleet pane send-text w1:p2 "$PAYLOAD"
+  ' _ "$ROOT" "$PAYLOAD" \
+    || fail "Herdr literal transport invocation failed"
+  assert_argv "$log" herdr fleet pane send-text w1:p2 "$PAYLOAD" \
+    || fail "Herdr literal transport assertion failed"
   pass "Herdr transports the guarded Pi worker launch line as one literal payload"
 }
 
@@ -66,8 +70,10 @@ test_zellij_literal_transport() {
     fm_backend_zellij_target_ready() { fm_backend_zellij_parse_target "$1"; }
     fm_backend_zellij_cli() { printf "%s\0" "$@" > "$FM_ARGV_LOG"; }
     fm_backend_zellij_send_literal fleet:7 "$2" fm-worker
-  ' _ "$ROOT" "$PAYLOAD"
-  assert_argv "$log" zellij fleet action paste --pane-id 7 -- "$PAYLOAD"
+  ' _ "$ROOT" "$PAYLOAD" \
+    || fail "Zellij literal transport invocation failed"
+  assert_argv "$log" zellij fleet action paste --pane-id 7 -- "$PAYLOAD" \
+    || fail "Zellij literal transport assertion failed"
   pass "Zellij transports the guarded Pi worker launch line as one literal payload"
 }
 
@@ -78,8 +84,10 @@ test_cmux_literal_transport() {
     fm_backend_cmux_target_ready() { fm_backend_cmux_parse_target "$1"; }
     fm_backend_cmux_cli() { printf "%s\0" "$@" > "$FM_ARGV_LOG"; }
     fm_backend_cmux_send_literal workspace:surface "$2" fm-worker
-  ' _ "$ROOT" "$PAYLOAD"
-  assert_argv "$log" cmux send --workspace workspace --surface surface -- "$PAYLOAD"
+  ' _ "$ROOT" "$PAYLOAD" \
+    || fail "cmux literal transport invocation failed"
+  assert_argv "$log" cmux send --workspace workspace --surface surface -- "$PAYLOAD" \
+    || fail "cmux literal transport assertion failed"
   pass "cmux transports the guarded Pi worker launch line as one literal payload"
 }
 
@@ -90,8 +98,10 @@ test_orca_literal_transport() {
     fm_backend_orca_tool_check() { return 0; }
     fm_backend_orca_run_json() { printf "%s\0" "$@" > "$FM_ARGV_LOG"; }
     fm_backend_orca_send_literal terminal-1 "$2"
-  ' _ "$ROOT" "$PAYLOAD"
-  assert_argv "$log" orca orca terminal send --terminal terminal-1 --text "$PAYLOAD" --json
+  ' _ "$ROOT" "$PAYLOAD" \
+    || fail "Orca literal transport invocation failed"
+  assert_argv "$log" orca orca terminal send --terminal terminal-1 --text "$PAYLOAD" --json \
+    || fail "Orca literal transport assertion failed"
   pass "Orca transports the guarded Pi worker launch line as one literal payload"
 }
 

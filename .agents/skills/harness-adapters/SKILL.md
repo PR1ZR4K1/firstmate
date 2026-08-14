@@ -267,7 +267,7 @@ Throwing from `session.idle` does not block `opencode run`, so the primary adapt
 The companion `.opencode/plugins/fm-primary-watch-arm.js` owns normal TUI watcher wake supervision and coordinates with the guard plugin before the guard tries a blind-turn follow-up.
 The follow-up was verified in the interactive TUI; `opencode run` can exit before displaying a queued follow-up, so the adapter is fail-open in headless mode.
 
-## pi and pi-signed (VERIFIED; project trust on Pi 0.84.1 on 2026-08-13, shared pi-signed behavior on 0.82.0 on 2026-07-27)
+## pi and pi-signed (VERIFIED; project trust on Pi 0.84.1 on 2026-08-14, shared pi-signed behavior on 0.82.0 on 2026-07-27)
 
 | Fact | Value |
 |---|---|
@@ -289,6 +289,7 @@ Multiple positional args become separate queued messages; `fm-spawn`'s template 
 Normal Firstmate-launched Pi-family workers receive Pi's process-local `--approve` project-trust override after `fm-spawn` proves the isolated task worktree or seeded secondmate home, so no trust dialog is expected on fresh launches or safe relaunches.
 This permits project-local settings, skills, packages, and executable extensions to load with the worker's full user permissions; it is not a sandbox or a tool-permission boundary.
 The override saves no entry in `~/.pi/agent/trust.json` and changes no global setting.
+Canonical-versus-raw provenance in the task record prevents relaunch from inferring this grant for a command that originally used the raw-command escape hatch.
 Keep trust-dialog handling as defensive compatibility: if an older Pi build or an unexpected nonstandard launch path still presents one, select `Trust (this session only)` when available and verify that the isolated worker starts processing its instructions.
 
 `fm-spawn` keeps the generated turn-end extension in `state/`, outside the worktree, so task wiring does not pollute the project or itself become a project-local protected resource.

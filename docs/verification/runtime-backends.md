@@ -174,8 +174,8 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, Kimi, and Muse share that backend 
 
 ## Pi worker project trust
 
-The scoped worker launch was verified on 2026-08-13 against installed Pi 0.84.1.
-The executable-interface regressions exercise fresh Pi and pi-signed workers and scouts, seeded secondmates, safe relaunches, help-only discovery probes, raw Pi commands, non-Pi adapters, preserved launch arguments, unchanged trust/settings fixtures, and the literal transport used by every spawn-capable backend.
+The scoped worker launch was verified on 2026-08-14 against installed Pi 0.84.1.
+The executable-interface regressions exercise fresh Pi and pi-signed workers and scouts, seeded secondmates, safe relaunches, canonical-versus-raw provenance, legacy ambiguity refusal, help-only discovery probes, raw Pi commands, sentinel-like valid paths, non-Pi adapters, preserved launch arguments, unchanged trust/settings fixtures, and the literal transport used by every spawn-capable backend.
 
 ```sh
 pi --version
@@ -191,12 +191,15 @@ Relevant bounded output:
 0.84.1
 ok - pi receives exactly one process-local --approve with intact worker argv while its discovery probe remains --help-only
 ok - pi-signed receives exactly one process-local --approve while preserving its executable identity and Pi argv
+ok - Pi adds project trust without changing executable or argument paths containing sentinel-like bytes
 ok - Pi and pi-signed scouts each receive exactly one process-local --approve in their isolated worktree
-ok - a raw command named pi remains outside the scoped project-trust grant
+ok - a raw command named pi remains outside the scoped project-trust grant and records raw provenance
 ok - the scoped Pi worker launch leaves project trust and global settings byte-identical
 ok - a validated seeded pi-signed secondmate home receives the same process-local project trust with distinct runtime identity
 ok - an unseeded Pi secondmate home is refused before the process-local project-trust grant
 ok - safe Pi and pi-signed relaunches each keep their recorded isolated worktree and receive one process-local --approve
+ok - raw and legacy Pi provenance refuse before stop unless an explicit canonical replacement is selected
+ok - fm-spawn --relaunch: raw and legacy Pi provenance cannot gain project trust by inference
 ok - tmux transports the guarded Pi worker launch line as one literal payload
 ok - Herdr transports the guarded Pi worker launch line as one literal payload
 ok - Zellij transports the guarded Pi worker launch line as one literal payload

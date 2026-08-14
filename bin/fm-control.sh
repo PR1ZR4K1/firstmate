@@ -38,8 +38,11 @@
 #              durable config/secondmate-harness pin (harness plus its optional
 #              model and effort tokens) exactly as any other respawn does, while
 #              a ship or scout keeps the exact adapter already recorded for it.
-#              A prefixed raw-command basename cannot reconstruct its launch
-#              command, so relaunch requires an explicit --harness for it.
+#              Every new task records canonical-versus-raw launch provenance.
+#              A raw command cannot be reconstructed from its basename, so its
+#              relaunch requires an explicit --harness; a legacy Pi-family
+#              record with no provenance requires the same deliberate choice
+#              before the running agent is stopped.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -288,6 +291,7 @@ BACKEND=$FM_BACKEND_VALIDATED_BACKEND
 T=$FM_BACKEND_VALIDATED_TARGET
 LABEL="fm-$ID"
 RECORDED_HARNESS=$(fm_meta_get "$META" harness)
+RECORDED_LAUNCH_PROVENANCE=$(fm_meta_get "$META" launch_provenance)
 KIND=$(fm_meta_get "$META" kind)
 WT=$(fm_meta_get "$META" worktree)
 [ -n "$KIND" ] || KIND=ship
@@ -501,6 +505,7 @@ RELAUNCH_TX=
 RELAUNCH_BRIEF=
 PRIOR_HARNESS=$HARNESS
 PRIOR_RECORDED_HARNESS=$RECORDED_HARNESS
+PRIOR_LAUNCH_PROVENANCE=$RECORDED_LAUNCH_PROVENANCE
 CONFIG_HARNESS=
 CONFIG_MODEL=
 CONFIG_EFFORT=
@@ -523,6 +528,7 @@ journal_write() {  # <phase> [extra-line]...
     echo "worktree=$WT"
     echo "kind=$KIND"
     echo "from_harness=$PRIOR_RECORDED_HARNESS"
+    echo "from_launch_provenance=${PRIOR_LAUNCH_PROVENANCE:-legacy}"
     echo "from_model=$PRIOR_MODEL"
     echo "from_effort=$PRIOR_EFFORT"
     echo "to_harness=$TARGET_HARNESS"
@@ -600,6 +606,25 @@ relaunch_rollback() {
 resolve_relaunch_profile() {
   PRIOR_HARNESS=$HARNESS
   PRIOR_RECORDED_HARNESS=$RECORDED_HARNESS
+  PRIOR_LAUNCH_PROVENANCE=$RECORDED_LAUNCH_PROVENANCE
+  case "$PRIOR_LAUNCH_PROVENANCE" in
+    canonical|raw|'') ;;
+    *) die "task $ID records invalid launch_provenance '$PRIOR_LAUNCH_PROVENANCE'; refusing to guess whether its prior launch was canonical or raw" ;;
+  esac
+  if [ "$HARNESS_SET" = 0 ]; then
+    case "$PRIOR_LAUNCH_PROVENANCE" in
+      raw)
+        die "task $ID was launched from a raw command whose basename '$PRIOR_RECORDED_HARNESS' cannot reconstruct the original launch; pass an explicit --harness to choose the replacement runtime deliberately"
+        ;;
+      '')
+        case "$PRIOR_HARNESS" in
+          pi|pi-signed)
+            die "legacy Pi-family task $ID has no launch provenance; pass an explicit --harness before stopping it so project trust is never granted by inference"
+            ;;
+        esac
+        ;;
+    esac
+  fi
   PRIOR_MODEL=$(fm_meta_get "$META" model)
   PRIOR_EFFORT=$(fm_meta_get "$META" effort)
   [ -n "$PRIOR_MODEL" ] || PRIOR_MODEL=default

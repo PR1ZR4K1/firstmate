@@ -147,12 +147,12 @@ execute_pi_launch() {  # <launch> <cwd> <argv-log>
   (
     cd "$cwd" || exit 1
     FM_FAKE_PI_ARGV_LOG="$argv_log" bash -c "$launch"
-  )
+  ) || fail "Pi launch command did not execute successfully in $cwd"
 }
 
 assert_pi_argv() {  # <argv-log> <extension> <model> <thinking> <tui:on|off> <label>
   local argv_log=$1 extension=$2 model=$3 thinking=$4 tui=$5 label=$6
-  python3 - "$argv_log" "$extension" "$model" "$thinking" "$tui" "$label" <<'PY'
+  if ! python3 - "$argv_log" "$extension" "$model" "$thinking" "$tui" "$label" <<'PY'
 import sys
 
 path, extension, model, thinking, tui, label = sys.argv[1:]
@@ -174,11 +174,14 @@ if args.count("--approve") != 1:
 if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
     raise SystemExit(f"{label}: launch brief lost its typed operational envelope: {args[-1]!r}")
 PY
+  then
+    fail "$label Pi argv assertion failed"
+  fi
 }
 
 assert_secondmate_pi_argv() {  # <argv-log> <turnend-extension> <watch-extension> <label>
   local argv_log=$1 turnend=$2 watch=$3 label=$4
-  python3 - "$argv_log" "$turnend" "$watch" "$label" <<'PY'
+  if ! python3 - "$argv_log" "$turnend" "$watch" "$label" <<'PY'
 import sys
 
 path, turnend, watch, label = sys.argv[1:]
@@ -192,6 +195,9 @@ if args.count("--approve") != 1:
 if not args[-1].startswith("\u2063FIRSTMATE_OP: v1 launch-brief: "):
     raise SystemExit(f"{label}: launch brief lost its typed operational envelope: {args[-1]!r}")
 PY
+  then
+    fail "$label Pi argv assertion failed"
+  fi
 }
 
 test_no_profile_keeps_claude_profile_defaults() {
@@ -594,12 +600,17 @@ test_pi_threads_model_and_max_effort() {
   execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/pi.argv"
   assert_pi_argv "$CASE_DIR/pi.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
     openai-codex/gpt-5.6-sol max on "plain Pi fresh worker"
-  python3 - "$CASE_DIR/pi-probe.argv" <<'PY'
+  if ! python3 - "$CASE_DIR/pi-probe.argv" <<'PY'
 import sys
 args = [part.decode() for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
 if args != ["--help"]:
     raise SystemExit(f"Pi discovery probe received worker-only argv: {args!r}")
 PY
+  then
+    fail "Pi discovery probe received worker-only arguments"
+  fi
+  [ "$(sed -n 's/^launch_provenance=//p' "$HOME_DIR/state/$id.meta")" = canonical ] \
+    || fail "canonical Pi worker did not record canonical launch provenance"
   pass "pi receives exactly one process-local --approve with intact worker argv while its discovery probe remains --help-only"
 }
 
@@ -637,6 +648,26 @@ test_pi_signed_threads_shared_pi_profile_and_preserves_identity() {
   assert_pi_argv "$CASE_DIR/pi-signed.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
     openai-codex/gpt-5.6-sol max on "pi-signed fresh worker"
   pass "pi-signed receives exactly one process-local --approve while preserving its executable identity and Pi argv"
+}
+
+test_pi_preserves_sentinel_like_executable_and_argument_paths() {
+  local rec id out status launch
+  id=profile-pi-sentinel-z8b
+  rec=$(make_spawn_case profile-__PIAPPROVE__-sentinel pi "$id")
+  read_case_record "$rec"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "Pi spawn with sentinel-like valid paths should succeed"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "'$FAKEBIN_DIR/pi' --tui-mode regular --approve" \
+    "Pi executable path containing sentinel-like bytes was changed"
+  assert_contains "$launch" "-e '$HOME_DIR/state/$id.pi-ext.ts'" \
+    "Pi extension path containing sentinel-like bytes was changed"
+  execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/pi-sentinel.argv"
+  assert_pi_argv "$CASE_DIR/pi-sentinel.argv" "$HOME_DIR/state/$id.pi-ext.ts" \
+    '' '' on "Pi sentinel-like paths"
+  pass "Pi adds project trust without changing executable or argument paths containing sentinel-like bytes"
 }
 
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi() {
@@ -706,13 +737,18 @@ test_raw_pi_command_does_not_receive_scoped_project_trust() {
   assert_not_contains " $launch " " --approve " \
     "raw Pi launch command received canonical worker project trust"
   PATH="$FAKEBIN_DIR:$PATH" execute_pi_launch "$launch" "$WT_DIR" "$CASE_DIR/raw-pi.argv"
-  python3 - "$CASE_DIR/raw-pi.argv" <<'PY'
+  if ! python3 - "$CASE_DIR/raw-pi.argv" <<'PY'
 import sys
 args = [part.decode() for part in open(sys.argv[1], "rb").read().split(b"\0") if part]
 if args != ["--raw-worker-probe"]:
     raise SystemExit(f"raw Pi argv changed: {args!r}")
 PY
-  pass "a raw command named pi remains outside the scoped project-trust grant"
+  then
+    fail "raw Pi command did not preserve its argv"
+  fi
+  [ "$(sed -n 's/^launch_provenance=//p' "$HOME_DIR/state/$id.meta")" = raw ] \
+    || fail "raw Pi command did not record raw launch provenance"
+  pass "a raw command named pi remains outside the scoped project-trust grant and records raw provenance"
 }
 
 test_pi_launch_keeps_trust_and_global_settings_unchanged() {
@@ -784,6 +820,8 @@ test_pi_signed_persistent_secondmate_uses_pi_extensions_and_identity() {
   assert_contains "$out" "spawned $id harness=pi-signed kind=secondmate" \
     "pi-signed secondmate spawn did not preserve its runtime identity"
   assert_meta_profile "$HOME_DIR/state/$id.meta" pi-signed default default
+  assert_grep 'launch_provenance=canonical' "$HOME_DIR/state/$id.meta" \
+    "validated Pi secondmate did not record canonical launch provenance"
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "FM_PI_HARNESS=pi-signed '$FAKEBIN_DIR/pi-signed' --tui-mode regular --approve -e '$sm/.pi/extensions/fm-primary-turnend-guard.ts' -e '$sm/.pi/extensions/fm-primary-pi-watch.ts'" \
     "pi-signed secondmate did not apply scoped project trust with Pi's primary extension launch shape"
@@ -921,6 +959,7 @@ test_opencode_threads_model_and_ignores_effort_axis
 test_pi_threads_model_and_max_effort
 test_pi_tui_mode_probe_is_safe_for_old_and_new_pi
 test_pi_signed_threads_shared_pi_profile_and_preserves_identity
+test_pi_preserves_sentinel_like_executable_and_argument_paths
 test_pi_family_scouts_receive_scoped_project_trust
 test_raw_pi_command_does_not_receive_scoped_project_trust
 test_pi_launch_keeps_trust_and_global_settings_unchanged

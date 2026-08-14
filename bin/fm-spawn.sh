@@ -107,9 +107,14 @@
 #   /updatefirstmate, restart). A bare adapter name (claude|codex|opencode|pi|pi-signed|grok|kimi|muse)
 #   overrides it for this spawn (either kind). A non-flag string containing
 #   whitespace is treated as a RAW launch command - the escape hatch for verifying
-#   new adapters. For pi and pi-signed, fm-spawn resolves the selected executable
-#   name from PATH once, probes that concrete path with --help, and launches the
-#   same path. It adds --tui-mode regular only when that help advertises the flag;
+#   new adapters. Every task record carries launch_provenance=canonical|raw so a
+#   relaunch cannot reconstruct a raw command's basename as a canonical adapter.
+#   A raw-provenance relaunch requires an explicit replacement --harness, as does
+#   a legacy Pi-family record with no provenance; the deliberate replacement then
+#   records its own canonical or raw provenance. For pi and pi-signed, fm-spawn
+#   resolves the selected executable name from PATH once, probes that concrete
+#   path with --help, and launches the same path. It adds --tui-mode regular only
+#   when that help advertises the flag;
 #   a failed or inconclusive probe omits it so older Pi versions remain launchable.
 #   A missing selected executable refuses before endpoint creation, and pi-signed
 #   never falls back to pi.
@@ -165,7 +170,8 @@
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __PIAPPROVE__ process-local --approve, resolved only at the guarded final
-#                   boundary for a canonical Pi-family worker launch
+#                   boundary and before caller/path interpolation for a canonical
+#                   Pi-family worker launch
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
 #                  turn-end signal rides the launch command, e.g. codex -c notify=[...])
 #     __PIEXT__    absolute path to state/<task-id>.pi-ext.ts (pi turn-end extension,
@@ -185,8 +191,9 @@
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
 # success line and state/<id>.meta omit them.
-# Every fresh spawn or relaunch records a new spawn_gen= incarnation token so durable
-# consumers can distinguish a replacement worker that reuses the same task id.
+# Every fresh spawn or relaunch records launch_provenance=canonical|raw plus a new
+# spawn_gen= incarnation token so recovery can preserve the launch authority boundary
+# and durable consumers can distinguish a replacement worker that reuses the same task id.
 # When the home session's frozen trace-context decision is enabled (see
 # docs/configuration.md and bin/fm-trace-context-lib.sh), the meta also records
 # one W3C traceparent= carrier, the same value injected into the pane as
@@ -616,6 +623,7 @@ spawn_remote_secondmate() {
     echo "worktree=$home"
     echo "project=$root"
     echo "harness=$harness"
+    echo "launch_provenance=canonical"
     echo "kind=secondmate"
     echo "mode=secondmate"
     echo "yolo=off"
@@ -983,6 +991,7 @@ FIRSTMATE_HOME=
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RELAUNCH_PRIOR_LAUNCH_PROVENANCE=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -998,6 +1007,31 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_TARGET=$FM_BACKEND_VALIDATED_TARGET
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
+  RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  RELAUNCH_PRIOR_LAUNCH_PROVENANCE=$(fm_meta_get "$RELAUNCH_META" launch_provenance)
+  case "$RELAUNCH_PRIOR_LAUNCH_PROVENANCE" in
+    canonical|raw|'') ;;
+    *)
+      echo "error: task $ID records invalid launch_provenance '$RELAUNCH_PRIOR_LAUNCH_PROVENANCE'; refusing to guess whether its prior launch was canonical or raw" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$HARNESS_SET" -eq 0 ]; then
+    case "$RELAUNCH_PRIOR_LAUNCH_PROVENANCE" in
+      raw)
+        echo "error: task $ID was launched from a raw command whose basename '$RELAUNCH_PRIOR_HARNESS' cannot be reconstructed safely; pass an explicit --harness to choose the replacement adapter" >&2
+        exit 1
+        ;;
+      '')
+        case "$RELAUNCH_PRIOR_HARNESS" in
+          pi|pi-signed)
+            echo "error: legacy Pi-family task $ID has no launch provenance; pass an explicit --harness to choose a canonical replacement rather than granting project trust by inference" >&2
+            exit 1
+            ;;
+        esac
+        ;;
+    esac
+  fi
   # A relaunch must PROVE the previous agent is gone before it launches another
   # one into the same endpoint, and only tmux and herdr have a recovery-grade
   # classifier that can (bin/fm-control-lib.sh owns that capability table).
@@ -1010,7 +1044,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: task $ID's endpoint reads '$RELAUNCH_STATE'; a relaunch requires a positively agent-free endpoint (stop the agent first with bin/fm-control.sh $ID exit)" >&2
     exit 1
   }
-  RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -1171,6 +1204,7 @@ launch_template() {
 }
 
 CANONICAL_ADAPTER_LAUNCH=0
+LAUNCH_PROVENANCE=raw
 case "$ARG3" in
   *' '*)  # raw launch command (unverified-adapter escape hatch)
     LAUNCH=$ARG3
@@ -1201,11 +1235,13 @@ case "$ARG3" in
     fi
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: no launch template for harness '$HARNESS' (from $harness_src or detection); pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     CANONICAL_ADAPTER_LAUNCH=1
+    LAUNCH_PROVENANCE=canonical
     ;;
   *)
     HARNESS=$ARG3
     LAUNCH=$(launch_template "$HARNESS" "$KIND") || { echo "error: unknown harness '$HARNESS'; pass a raw launch command to use an unverified adapter" >&2; exit 1; }
     CANONICAL_ADAPTER_LAUNCH=1
+    LAUNCH_PROVENANCE=canonical
     ;;
 esac
 
@@ -2584,7 +2620,7 @@ fi
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness launch_provenance kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -2596,6 +2632,7 @@ preserve_relaunch_meta() {
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
+  echo "launch_provenance=$LAUNCH_PROVENANCE"
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
@@ -2656,6 +2693,27 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   fm_lock_release "$SPAWN_TASK_SET_LOCK"
 fi
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+
+# This is the guarded canonical worker launch boundary: task identity and
+# metadata are published, executable and adapter inputs are pinned, a ship or
+# scout is proven to be in its isolated worktree (including on relaunch), and a
+# secondmate is proven to be in its seeded isolated home. Resolve only the
+# template-owned Pi marker here, before any executable, model, brief, extension,
+# or home value is interpolated, so caller-controlled bytes can never collide
+# with the marker and raw commands remain byte-for-byte outside this grant.
+if [ "$CANONICAL_ADAPTER_LAUNCH" -eq 1 ]; then
+  case "$HARNESS" in
+    pi|pi-signed)
+      case "$LAUNCH" in
+        *__PIAPPROVE__*) LAUNCH=${LAUNCH/__PIAPPROVE__/' --approve'} ;;
+        *) echo "error: canonical $HARNESS worker launch is missing its guarded project-trust placeholder" >&2; exit 1 ;;
+      esac
+      case "$LAUNCH" in
+        *__PIAPPROVE__*) echo "error: canonical $HARNESS worker launch contains more than one project-trust placeholder" >&2; exit 1 ;;
+      esac
+      ;;
+  esac
+fi
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")
@@ -2747,22 +2805,6 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 sleep 0.3
-# This is the canonical worker launch boundary: task identity and metadata are
-# published, executable and adapter inputs are pinned, a ship/scout is proven to
-# be in its isolated worktree (including on relaunch), and a secondmate is proven
-# to be in its seeded isolated home. Resolve Pi's one-run project-trust override
-# here rather than while parsing a harness name, so raw commands and every other
-# command surface remain byte-for-byte outside this grant.
-if [ "$CANONICAL_ADAPTER_LAUNCH" -eq 1 ]; then
-  case "$HARNESS" in
-    pi|pi-signed)
-      case "$LAUNCH" in
-        *__PIAPPROVE__*) LAUNCH=${LAUNCH//__PIAPPROVE__/' --approve'} ;;
-        *) echo "error: canonical $HARNESS worker launch is missing its guarded project-trust placeholder" >&2; exit 1 ;;
-      esac
-      ;;
-  esac
-fi
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then

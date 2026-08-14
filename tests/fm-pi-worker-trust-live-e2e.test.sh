@@ -5,7 +5,7 @@
 # No model prompt is submitted and no trust-dialog key is sent.
 # The extension marker therefore proves that --approve bypassed the interactive
 # trust prompt and loaded a protected project resource for this process only.
-set -u
+set -eu
 
 if [ "${FM_PI_WORKER_TRUST_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_PI_WORKER_TRUST_LIVE_E2E=1 to run the isolated real-Pi worker project-trust regression"
