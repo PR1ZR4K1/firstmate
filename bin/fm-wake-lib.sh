@@ -420,8 +420,9 @@ _fm_recovery_marker_write_locked() {
 # outstanding acknowledgement remains usable; docs/watcher-continuity.md owns
 # the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime} lock saved_token generation=''
+  local marker=$1 kind=${2:-downtime} publish_mode=${3:-replace} lock saved_token generation='' line=''
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
+  case "$publish_mode" in replace|preserve-handling) ;; *) return 1 ;; esac
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
   if [ -d "$marker" ] && [ ! -L "$marker" ]; then
@@ -434,11 +435,21 @@ _fm_recovery_marker_publish() {
     # The token is restored because publishing owns no snapshot of its own.
     saved_token=$FM_RECOVERY_MARKER_TOKEN
     if fm_recovery_marker_read "$marker"; then
-      case "$FM_RECOVERY_MARKER_TOKEN" in
-        pending:handling:*|pending:downtime:*) generation=${FM_RECOVERY_MARKER_TOKEN##*:} ;;
+      line=$FM_RECOVERY_MARKER_TOKEN
+      case "$line" in
+        pending:handling:*|pending:downtime:*) generation=${line##*:} ;;
       esac
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
+    # A delivered notification already gives the active handling turn one
+    # durable generation to drain. Queue appends join that generation without
+    # reopening delivery; acknowledgement republishes downtime when rows above
+    # its sequence remain, so a racing source is notified after the batch.
+    if [ "$publish_mode" = preserve-handling ]; then
+      case "$line" in
+        pending:handling:*) fm_lock_release "$lock"; return 0 ;;
+      esac
+    fi
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation"; then
     fm_lock_release "$lock"
@@ -482,6 +493,16 @@ fm_recovery_marker_snapshot() {
   fm_lock_acquire_wait "$lock" || return 1
   fm_recovery_marker_read "$marker" || true
   fm_lock_release "$lock"
+}
+
+# True while one notification for this recovery generation has been delivered
+# and its handling acknowledgement is still outstanding.
+fm_recovery_marker_notification_in_flight() {  # <marker>
+  fm_recovery_marker_snapshot "$1" || return 1
+  case "$FM_RECOVERY_MARKER_TOKEN" in
+    pending:handling:*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 _fm_recovery_marker_ack() {
@@ -831,7 +852,7 @@ fm_wake_append() {
   status=0
 
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
-  _fm_recovery_marker_publish "$recovery_marker" downtime || status=$?
+  _fm_recovery_marker_publish "$recovery_marker" downtime preserve-handling || status=$?
   if [ "$status" -eq 0 ]; then
     seq=$(cat "$seq_file" 2>/dev/null || echo 0)
     case "$seq" in

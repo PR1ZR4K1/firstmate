@@ -417,7 +417,7 @@ test_wake_publish_requires_atomic_recovery_evidence() {
   state="$dir/state"
   fakebin="$dir/fakebin"
   real_mv=$(command -v mv) || fail "could not locate mv for recovery publication fixture"
-  printf 'pending:handling:existing\n' > "$state/.watcher-down"
+  printf 'pending:downtime:existing\n' > "$state/.watcher-down"
   cat > "$fakebin/mv" <<'SH'
 #!/usr/bin/env bash
 last=${!#}
@@ -434,7 +434,7 @@ SH
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "recovery publication failure allowed wake append to succeed"
-  [ "$(cat "$state/.watcher-down")" = 'pending:handling:existing' ] \
+  [ "$(cat "$state/.watcher-down")" = 'pending:downtime:existing' ] \
     || fail "failed atomic publication erased existing recovery evidence"
   [ ! -s "$state/.wake-queue" ] \
     || fail "wake became durable before its recovery evidence"

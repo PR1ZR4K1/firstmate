@@ -379,6 +379,44 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+### Five-worker notification flood control
+
+The normal-mode flood fix was verified on 2026-08-14 with real watcher, arm, drain, recovery-marker, checkpoint, and primary-extension processes against isolated local state.
+The pre-fix counterfactual reproduced two causes independently: five parked decision tasks emitted repeated stale notifications on later pane hashes, and five near-simultaneous turn ends emitted five conversational notifications plus duplicate queue rows from the two grace scans.
+
+`bin/fm-wake-lib.sh` remains the durable notification owner.
+The correction adds no backend- or harness-local queue: the watcher now retains one latest signal row per source, emits one fixed-size multi-source reason, and lets later normal-mode events join a delivered handling generation until its sequence-bound acknowledgement.
+If higher-sequence rows survive acknowledgement, the same generation returns to downtime and produces one bounded recovery notification.
+Explicit `parked`, `blocked`, `done`, and `failed` states suppress a later stale hash only after the matching captain-relevant status was surfaced; the first decision or blocker, unknown or dead state, and the existing working-wedge escalation remain mandatory.
+
+The primary-notification applicability review covered Claude's Stop-owned arm, Codex's foreground checkpoint, OpenCode's idle plugin, Pi's extension-owned arm, and Grok's tracked background arm.
+All five consume the shared watcher or arm output after durable publication, so no adapter-specific batching implementation was appropriate.
+Pi and OpenCode successor ordering and single-flight behavior remained unchanged, while the rendered Claude, Codex, Grok, OpenCode, and Pi supervision contracts remained intact.
+
+Deterministic verification commands:
+
+```sh
+tests/fm-supervision-flood.test.sh
+tests/fm-wake-queue.test.sh
+tests/fm-watch-arm.test.sh
+tests/fm-watch-triage.test.sh
+tests/fm-watcher-lock.test.sh
+tests/fm-watch-checkpoint.test.sh
+tests/fm-pi-watch-extension.test.sh
+tests/fm-supervision-events.test.sh
+tests/fm-wake-daemon-lifecycle-e2e.test.sh
+tests/fm-supervision-instructions.test.sh
+tests/fm-turnend-guard.test.sh
+tests/fm-test-run.test.sh
+bin/fm-lint.sh
+bin/fm-doc-audience-check.sh
+```
+
+Every command above exited zero in its bounded final run.
+The five-worker regression proved one bounded delivery with five durable source identities, a higher-sequence append surviving the drain-and-ack race, unchanged single-worker output, no repeated parked-decision stale escalation, preservation of the first decision notification, and preservation of a real working wedge escalation.
+The real-process arm and triage suites also completed after their fixture cleanup waits were bounded; this distinguishes the earlier serial-run timeout from a product deadlock.
+The installed ShellCheck was 0.11.0, and the post-rebase documentation check reported `surfaces=75 local_links=255`.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.

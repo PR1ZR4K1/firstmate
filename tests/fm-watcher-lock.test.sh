@@ -34,6 +34,18 @@ drain_and_ack() {  # <state>
     --recovery-generation "$generation"
 }
 
+stop_arm_with_hup() {  # <state> <arm-pid>
+  local state=$1 arm_pid=$2 watcher_pid status
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -HUP "$arm_pid" 2>/dev/null || true
+  wait_for_exit "$arm_pid" 100
+  status=$?
+  [ "$status" -ne 124 ] && return 0
+  kill -KILL "$watcher_pid" "$arm_pid" 2>/dev/null || true
+  wait "$arm_pid" 2>/dev/null || true
+  return 1
+}
+
 test_singleton_start() {
   local dir state fakebin out1 out2 pid1 pid2 live i
   dir=$(make_case singleton)
@@ -867,8 +879,8 @@ SH
   grep -qF "watcher: started pid=$successor_pid" "$armout" || fail "successor ledger cycle did not start"
   grep -q "arm_pid=$first_arm.*successor=started:$successor_pid" "$state/.watch-cycle-exits.log" \
     || fail "predecessor ledger record was not linked to its verified successor"
-  kill -HUP "$successor_arm" 2>/dev/null || true
-  wait "$successor_arm" 2>/dev/null || true
+  stop_arm_with_hup "$state" "$successor_arm" \
+    || fail "successor ledger arm did not stop after HUP"
   # The forced interruption is a watcher-down interval. Consume the prior
   # delivered wake before beginning independent ledger cycles, just as the
   # recovery handling turn does, so this fixture does not intentionally carry a
@@ -889,8 +901,8 @@ SH
       i=$((i + 1))
     done
     grep -qF 'watcher: started pid=' "$armout" || fail "bounded ledger cycle $iteration did not start"
-    kill -HUP "$successor_arm" 2>/dev/null || true
-    wait "$successor_arm" 2>/dev/null || true
+    stop_arm_with_hup "$state" "$successor_arm" \
+      || fail "bounded ledger arm $iteration did not stop after HUP"
     drain_and_ack "$state" \
       || fail "recovery drain after bounded ledger cycle $iteration failed"
     iteration=$((iteration + 1))

@@ -25,7 +25,33 @@ test_quiet_checkpoint_exits_124_cleanly() {
   expect_code 124 "$status" "quiet checkpoint exit"
   assert_contains "$(cat "$out")" "checkpoint: no actionable wake within 1s" "quiet checkpoint line missing"
   assert_absent "$home/state/.watch.lock/pid" "watch lock pid survived quiet checkpoint timeout"
-  pass "quiet checkpoint exits 124 with a clean checkpoint line and no live lock"
+  case "$(cat "$home/state/.watcher-down" 2>/dev/null || true)" in
+    ''|acked:*) ;;
+    *) fail "quiet checkpoint left a false downtime episode" ;;
+  esac
+  pass "quiet checkpoint exits 124 with a clean line, no live lock, and no false downtime"
+}
+
+test_quiet_checkpoint_preserves_preexisting_handling() {
+  local home out err status marker
+  home=$(make_home quiet-existing-handling)
+  out="$home/out.txt"
+  err="$home/err.txt"
+  marker="$home/state/.watcher-down"
+  printf 'pending:handling:existing\n' > "$marker"
+  printf '%s\t1\tcheck\trace\tcheck: raced while handling\n' "$(date +%s)" > "$home/state/.wake-queue"
+  status=0
+  FM_HOME="$home" FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 \
+    "$CHECKPOINT" --seconds 1 >"$out" 2>"$err" || status=$?
+  expect_code 124 "$status" "pre-existing handling checkpoint exit"
+  grep -F "$(printf '\tcheck\trace\t')" "$home/state/.wake-queue" >/dev/null \
+    || fail "quiet checkpoint consumed a pre-existing handling row"
+  case "$(cat "$marker" 2>/dev/null || true)" in
+    pending:*:existing) ;;
+    *) fail "quiet checkpoint acknowledged a pre-existing handling episode" ;;
+  esac
+  assert_absent "$home/state/.watch.lock/pid" "watch lock survived pre-existing handling timeout"
+  pass "quiet checkpoint preserves pre-existing handling rows and recovery generation"
 }
 
 test_signal_passes_through_and_exits_zero() {
@@ -88,6 +114,7 @@ test_existing_singleton_watcher_is_not_success() {
 }
 
 test_quiet_checkpoint_exits_124_cleanly
+test_quiet_checkpoint_preserves_preexisting_handling
 test_signal_passes_through_and_exits_zero
 test_registered_check_uses_preserved_watcher_environment
 test_existing_singleton_watcher_is_not_success

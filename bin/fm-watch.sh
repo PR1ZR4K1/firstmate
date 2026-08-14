@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Firstmate watcher.
 # Classifies supervision wakes in bash. In normal mode it absorbs benign wakes
-# and keeps blocking; it queues and exits only for actionable wakes.
+# and keeps blocking; it queues actionable wakes and closes the first cycle in a
+# handling generation, while later actionable sources coalesce durably until ack.
 # The no-verb signal and stale path is absorb-only-when-provably-working: a wake
 # is absorbed only when the crew shows POSITIVE evidence it is still working (an
 # actively-running no-mistakes step, or a backend busy signal), and surfaced
@@ -11,9 +12,10 @@
 # although its initial no-verb status signal still surfaces in normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
-#   signal: <file>...      status/turn-end signals, surfaced when a listed status
-#                          has a captain-relevant verb OR a no-verb signal's crew
-#                          is not provably working, unless afk is active
+#   signal: <file>         one status/turn-end signal, surfaced when its status
+#                          has a captain-relevant verb OR its crew is not provably
+#                          working; multi-source scans print one fixed-size batch
+#                          reason while retaining one durable row per source
 #   stale: <window>        a provably-working stale is ALWAYS absorbed (with a wedge
 #                          timer) regardless of what the status log says - an active
 #                          run-step or busy pane outranks even a captain-relevant log
@@ -21,9 +23,11 @@
 #                          firstmate hands it to a no-mistakes validation. A declared
 #                          external-wait pause is absorbed instead with its own long
 #                          re-surface cadence, never as a wedge. Only when neither
-#                          absorb class applies does the log's last line decide:
-#                          terminal (captain-relevant) or non-terminal (no verb),
-#                          both surfaced at once. A provably-working stale past the
+#                          absorb class applies does the log's last line decide.
+#                          A matching captain-relevant status that was already
+#                          surfaced is absorbed when current state is explicitly
+#                          parked, blocked, done, or failed; an unsurfaced event or
+#                          unknown state still surfaces. A provably-working stale past the
 #                          wedge threshold also surfaces, with an "escalation N"
 #                          count in the reason; at FM_WEDGE_DEMAND_INSPECT_COUNT
 #                          consecutive escalations on the SAME pane, the reason
@@ -121,8 +125,8 @@ HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trailing
-                                      # signals (a status write, then the same turn's
-                                      # turn-end hook) coalesce into one wake
+                                      # signals coalesce into one latest row per source
+                                      # and one bounded conversational batch reason
 # Busy state is decided by the semantic contract in bin/fm-busy-lib.sh, which
 # is the single owner of per-harness sources, source attribution, and the one
 # remaining rendered-text fallback (Grok only).
@@ -139,8 +143,9 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # (no done: status) is never swallowed. An ACTIONABLE wake (a captain-relevant
 # signal, a no-verb signal whose crew is not provably working, any check, a stale
 # pane whose crew is not provably working, a provably-working stale past the
-# threshold, or anything unknown) is written to the durable queue and exits, which
-# is what wakes the LLM through the background-task completion. The same classifier
+# threshold, or anything unknown) is written to the durable queue. The shared wake
+# owner closes the first cycle, then keeps later sources in the same in-flight
+# handling generation until acknowledgement reopens delivery for survivors. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
 # daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
@@ -466,6 +471,19 @@ scan_signals() {
   return 0
 }
 
+signal_batch_reason() {  # <space-separated source paths>
+  local files=$1 f first='' count=0
+  for f in $files; do
+    [ -n "$first" ] || first=$f
+    count=$((count + 1))
+  done
+  if [ "$count" -eq 1 ]; then
+    printf 'signal: %s' "$first"
+  else
+    printf 'signal: batch (%d sources queued; drain for durable identities)' "$count"
+  fi
+}
+
 # Deliver a durably queued process-event result to firstmate. Publication is
 # owned by bin/fm-procevent.sh - by the runner at capture time and by reconcile's
 # re-announcement - so this decides only whether a queued check record has been
@@ -608,6 +626,14 @@ mark_all_captain_relevant_surfaced() {
     [ -n "$f" ] || continue
     printf '%s' "$last" > "$(_hb_surfaced_path "$task")"
   done < <(scan_captain_relevant_statuses "$STATE")
+}
+
+captain_status_was_surfaced() {  # <task>
+  local task=$1 last surfaced
+  last=$(last_status_line "$STATE/$task.status")
+  [ -n "$last" ] || return 1
+  surfaced=$(cat "$(_hb_surfaced_path "$task")" 2>/dev/null || true)
+  [ "$surfaced" = "$last" ]
 }
 
 # Cheap heartbeat fleet-scan (the always-on twin of the daemon's catch-all). 0 if
@@ -948,15 +974,30 @@ while :; do
   pending=$(scan_signals)
   if [ -n "$pending" ]; then
     sleep "$SIGNAL_GRACE"
-    pending=$(printf '%s\n%s' "$pending" "$(scan_signals)")
+    # Keep one latest signature per source across the before/after grace scans.
+    # The queue therefore carries each batch member exactly once even when the
+    # unchanged source appears in both scans.
+    pending=$(printf '%s\n%s\n' "$pending" "$(scan_signals)" | awk -F '\t' '
+      NF >= 3 {
+        source = $3
+        if (!(source in seen)) {
+          order[++count] = source
+          seen[source] = 1
+        }
+        row[source] = $0
+      }
+      END {
+        for (i = 1; i <= count; i++) print row[order[i]]
+      }
+    ')
     files=""
     while IFS=$(printf '\t') read -r sf sig f; do
       [ -n "$sf" ] || continue
-      case " $files " in *" $f "*) ;; *) files="$files $f" ;; esac
+      files="$files $f"
     done <<EOF
 $pending
 EOF
-    reason="signal:$files"
+    reason=$(signal_batch_reason "$files")
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
     #   - the away-mode daemon owns triage (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
@@ -965,8 +1006,9 @@ EOF
     #     pipeline and no busy pane, so it may be done (even via an interactive menu
     #     that wrote no done: status), waiting on a decision, or wedged. Absorbing
     #     such a turn-end is exactly the swallowed-finish this change guards against.
-    # Actionable -> enqueue, advance .seen-* markers, exit. Benign (a no-verb wake
-    # whose crew IS provably working) in always-on mode -> advance the markers so it
+    # Actionable -> enqueue and advance .seen-* markers; the shared wake owner
+    # closes the first cycle or coalesces into an in-flight handling generation.
+    # Benign (a no-verb wake whose crew IS provably working) in always-on mode -> advance the markers so it
     # will not re-fire, log, and keep blocking without enqueuing. The provably-working
     # check is the only costly one (it may run a bounded no-mistakes call), so the ||
     # ordering evaluates it ONLY for a non-afk, no-captain-verb signal.
@@ -974,7 +1016,9 @@ EOF
     if afk_present || signal_reason_is_actionable $files || ! signal_crew_provably_working $files; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
-        fm_wake_append signal "$(basename "$f")" "$reason" || exit 1
+        # The conversational reason is bounded above, while each durable row
+        # retains its own source path for normal and away-mode classification.
+        fm_wake_append signal "$(basename "$f")" "signal: $f" || exit 1
       done <<EOF
 $pending
 EOF
@@ -1060,21 +1104,39 @@ EOF
           # poll. Root cause of the 2026-07 herdr false-surface incidents: a
           # validating crew was surfaced as stale every few minutes despite an
           # actively-running pipeline, purely because of this stale leftover
-          # line. On a NEW hash, give an active run/busy pane (the same
-          # authoritative source fm-crew-state.sh itself already prioritizes
-          # over the log) a chance to override before trusting the log.
+          # line. On a NEW hash, give the authoritative current-state reader the
+          # same precedence it has everywhere else. Active work overrides the log
+          # and keeps wedge detection; an explicit non-working state is absorbed
+          # only after the matching captain-relevant status has already surfaced.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
-            if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
-              printf '%s' "$h" > "$sf"
-              date +%s > "$ssf"
-              triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
-            else
-              fm_wake_append stale "$w" "stale: $w" || exit 1
-              printf '%s' "$h" > "$sf"
-              rm -f "$ssf"
-              mark_surfaced "$STATE/$(window_to_task "$w" "$STATE").status"
-              wake "stale: $w"
-            fi
+            task=$(window_to_task "$w" "$STATE")
+            case "$(crew_absorb_class "$task")" in
+              working)
+                printf '%s' "$h" > "$sf"
+                date +%s > "$ssf"
+                triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
+                ;;
+              nonworking)
+                if captain_status_was_surfaced "$task"; then
+                  printf '%s' "$h" > "$sf"
+                  rm -f "$ssf" "$ewf"
+                  triage_log "absorbed stale (captain-relevant status already surfaced; current state explicitly non-working): $w"
+                else
+                  fm_wake_append stale "$w" "stale: $w" || exit 1
+                  printf '%s' "$h" > "$sf"
+                  rm -f "$ssf"
+                  mark_surfaced "$STATE/$task.status"
+                  wake "stale: $w"
+                fi
+                ;;
+              *)
+                fm_wake_append stale "$w" "stale: $w" || exit 1
+                printf '%s' "$h" > "$sf"
+                rm -f "$ssf"
+                mark_surfaced "$STATE/$task.status"
+                wake "stale: $w"
+                ;;
+            esac
           elif [ -e "$ssf" ]; then
             # This exact hash was already overridden as provably-working (a
             # wedge timer is running for it) - keep treating it that way

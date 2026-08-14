@@ -1,7 +1,9 @@
 # Watcher continuity
 
-The watcher remains intentionally one-shot: one actionable reason closes one watcher cycle.
-Must-work continuity now lives above that process boundary instead of depending on the model remembering a re-arm step.
+The watcher remains one-shot for the first actionable reason in a recovery generation.
+While that generation's delivered notification is still being handled, later normal-mode actionable events stay durable in the same generation and the watcher remains live instead of closing once per source.
+Away mode retains strict one-shot watcher closes because its daemon owns per-close draining and captain-facing batching.
+Must-work continuity lives above the process boundary instead of depending on the model remembering a re-arm step.
 
 ## Ownership
 
@@ -37,6 +39,7 @@ No PreToolUse hook denies fleet commands based on watcher status.
 A genuine auto-arm failure describes the automatic mechanism as broken and never directs a routine manual background arm.
 Terminal arm-output classification (`started`, `attached`, or `FAILED`) remains defense in depth for the manual recovery path.
 Codex retains its bounded foreground checkpoint protocol.
+A quiet checkpoint reaps its child process group, safely reclaims only a dead singleton owner, and retires only the empty recovery episode that checkpoint created; pre-existing handling state or a racing durable row stays pending.
 Grok retains its tracked background-task notification protocol.
 No adapter starts a replacement with shell `&`.
 
@@ -45,12 +48,17 @@ The turn-end guard remains the final backstop rather than the normal continuity 
 ## Recovery episode acknowledgement
 
 A recovery episode is one generation of `state/.watcher-down`, and it is retired only by the generation-bound acknowledgement the drain prints as `WAKE_ACK_REQUIRED`.
-Every watcher close and every durable queue append publishes downtime, so a downtime republication of any pending episode reuses its generation instead of minting a new one.
-That reuse keeps a watcher close inside the handling window from orphaning the acknowledgement already presented and trapping later arms in repeated recovery presentation.
+A first queue append or watcher close publishes `pending:downtime`, and delivery confirmation or the first drain advances that generation to `pending:handling`.
+A queue append that finds `pending:handling` keeps that phase and generation, so the new row joins the notification already in flight instead of reopening one watcher close per source.
+The normal-mode wake owner therefore returns to supervision without printing another actionable reason, while away mode deliberately bypasses this coalescing for its daemon.
+Every source keeps its own queue key and monotonic sequence throughout that batching; only the conversational reason is bounded.
+
 An acknowledgement carries two separable facts: queue-row consumption is bound to the monotonic `--ack-through` sequence, while only retiring the episode is bound to `--recovery-generation`.
 A generation mismatch therefore does not block consumption of rows through that sequence; it is a non-fatal result that names its own remedy - re-drain, then acknowledge the newer episode.
 The acknowledgement retires the marker only when no rows remain after sequence-bound consumption.
-A concurrently appended wake has a higher sequence, remains queued, and keeps the episode pending for presentation.
+A concurrently appended wake has a higher sequence and remains queued.
+When rows survive, acknowledgement republishes `pending:downtime` under the same generation before releasing the queue lock, so the live watcher or next arm emits one recovery reason after the handled batch rather than losing the race or leaving it behind `pending:handling`.
+A source appended after an empty acknowledgement opens a fresh generation in the ordinary way.
 Consequently, an empty-queue downtime publication during handling can be retired by the outstanding acknowledgement without a dedicated recovery turn.
 An acknowledged episode does not freeze the generation, because the next downtime after it opens an episode of its own.
 
@@ -74,10 +82,12 @@ Only the watcher process touches `state/.last-watcher-beat`; no helper process c
 
 ## Regression coverage
 
+`tests/fm-supervision-flood.test.sh` drives five concurrent task records through the executable watcher and drain interfaces, proving that parked decisions do not repeat stale escalation, a real wedge still escalates, five turn ends retain five durable identities behind one bounded notification, a drain-and-ack race survives, and the single-worker reason remains unchanged.
 `tests/fm-pi-watch-extension.test.sh` checks Pi's first-cycle-or-explicit-repair tool metadata and ownership-based redundant-call no-ops, then simulates actionable and empty child closes against the actual Pi and OpenCode close handlers, blocks prompt delivery to prove the successor launches first, verifies single-flight behavior, changes the session lock before close to prove ownership is rechecked, and hangs each successor arm to prove bounded fallback delivery includes the typed restoration failure.
 The same suite covers ordinary same-process session replacement for `/new`, `/resume`, and `/fork`, same-instance shutdown-plus-start, stale prior-generation callbacks, repeated transitions with exactly one live cycle, disappearance of the shutting-down refusal after a valid replacement activates, and terminal quit still refusing late rearm.
 `tests/fm-watch-arm.test.sh` covers durable queue replay, real remote parent-replies ingestion into the authoritative status log, decision-only OPEN DECISIONS recovery, interrupted handling replay, generation-bound acknowledgement, a persistent live successor after recovery, a watcher close inside the handling window that must leave the printed acknowledgement valid, and the self-healing moved-generation acknowledgement that consumes its handled rows and names its remedy.
 `tests/fm-watcher-lock.test.sh` covers verified-successor attach, recovery publication before stale-lock removal, the typed self-eviction failure, bounded and successor-linked lifecycle rows, and a SIGSTOP counterfactual that distinguishes a live PID from a stale beacon before classifying termination.
+`tests/fm-watch-checkpoint.test.sh` covers bounded quiet-child cleanup with no false downtime, preservation of a pre-existing handling row and generation, actionable pass-through, environment preservation, and rejection of an externally owned singleton.
 `tests/fm-subagent-pretool-check.test.sh` proves Claude retains only the non-status Bash seatbelts.
 `tests/fm-claude-stop-autoarm.test.sh` covers the auto-arm's scope, stale and live session owners, unchanged AFK and need boundaries, single-flight, bounded failure retries, benign live-watcher cycle ends, one-notice failure episodes, and exit-2 translation.
 `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` starts with the reproduced stale-lock state, runs session start first, completes two tokenless cycles, and checks the competing-live-owner negative control.

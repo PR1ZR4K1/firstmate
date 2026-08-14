@@ -155,6 +155,23 @@ start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
   return 0
 }
 
+stop_rearm_arm() {  # <state> <arm-pid>
+  local state=$1 arm_pid=$2 watcher_pid i=0
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  kill -TERM "$arm_pid" 2>/dev/null || true
+  [ "$watcher_pid" = "$arm_pid" ] || kill -TERM "$watcher_pid" 2>/dev/null || true
+  while [ "$i" -lt 100 ]; do
+    if ! is_live_non_zombie "$arm_pid" && ! is_live_non_zombie "$watcher_pid"; then
+      break
+    fi
+    sleep 0.05
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$watcher_pid" && kill -KILL "$watcher_pid" 2>/dev/null || true
+  is_live_non_zombie "$arm_pid" && kill -KILL "$arm_pid" 2>/dev/null || true
+  wait "$arm_pid" 2>/dev/null || true
+}
+
 test_attached_arm_reports_the_delivered_wake() {
   local dir state fakebin out armout status
   dir=$(make_case attached-delivered-wake)
@@ -287,16 +304,10 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   append_wake "$state" check startup-network 'check: startup-network'
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 0.25
-  if is_live_non_zombie "$ARM_PID"; then
-    # End the fixture through an ordinary actionable status transition so this
-    # failing pre-fix path leaves no child behind.
-    printf 'done: fixture cleanup\n' > "$state/cleanup.status"
-    wait_for_exit "$ARM_PID" 80 || true
-    fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
-  fi
-  wait "$ARM_PID"
+  wait_for_exit "$ARM_PID" 80
   status=$?
+  [ "$status" -ne 124 ] \
+    || fail "re-arm stayed live instead of surfacing durable wakes and the still-open remote decision"
   expect_code 0 "$status" "re-arm re-surface wake must close successfully"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "re-arm did not report the durable recovery wake: $(cat "$armout")"
@@ -323,8 +334,7 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
 
   # A later down interval can have no new queue rows at all. The unchanged
   # remote decision must still trigger a recovery wake and be folded again.
-  kill "$ARM_PID" 2>/dev/null || true
-  wait "$ARM_PID" 2>/dev/null || true
+  stop_rearm_arm "$state" "$ARM_PID"
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-only-arm.out"
   wait_for_exit "$ARM_PID" 80 || fail "decision-only re-arm did not surface the open decision"
   decision_recovery_arm=$ARM_PID
@@ -345,8 +355,9 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   ! grep -F 'check: rearm-resurface' "$dir/decision-handling-successor.out" >/dev/null \
     || fail "decision-only handling successor emitted recursive recovery"
 
-  kill -TERM "$decision_successor" 2>/dev/null || fail "could not interrupt decision handling successor"
-  wait "$decision_successor" 2>/dev/null || true
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  [ -n "$watcher_pid" ] || fail "could not identify decision handling watcher"
+  stop_rearm_arm "$state" "$decision_successor"
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/interrupted-decision-arm.out"
   wait_for_exit "$ARM_PID" 80 || fail "interrupted decision handling was not recovered on successor re-arm"
   grep -F 'check: rearm-resurface' "$dir/interrupted-decision-arm.out" >/dev/null \
@@ -364,8 +375,7 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
     || fail "completed decision handling could not acknowledge current recovery"
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-successor-arm.out"
   is_live_non_zombie "$ARM_PID" || fail "acknowledged decision recovery did not leave a live successor"
-  kill "$ARM_PID" 2>/dev/null || true
-  wait "$ARM_PID" 2>/dev/null || true
+  stop_rearm_arm "$state" "$ARM_PID"
   pass "watch-arm: re-arm surfaces every queued wake and an open remote decision after downtime"
 }
 
@@ -433,8 +443,7 @@ test_delivery_gap_wake_is_recovered_once() {
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/stable-successor.out"
   is_live_non_zombie "$ARM_PID" || fail "successor looped after the delivery gap was drained"
-  kill "$ARM_PID" 2>/dev/null || true
-  wait "$ARM_PID" 2>/dev/null || true
+  stop_rearm_arm "$state" "$ARM_PID"
   pass "watch-arm: a wake queued after handling drain is recovered once at successor arm"
 }
 
@@ -498,8 +507,7 @@ test_interrupted_handling_is_redrained_on_rearm() {
     || fail "interrupted handling removed the unacknowledged durable wake"
   is_live_non_zombie "$ARM_PID" || fail "handling drain stopped its live successor"
 
-  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not interrupt the handling successor"
-  wait "$ARM_PID" 2>/dev/null || true
+  stop_rearm_arm "$state" "$ARM_PID"
   case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
     pending:downtime:*) ;;
     *) fail "interrupted pre-handling successor did not persist downtime recovery" ;;
@@ -545,8 +553,7 @@ test_malformed_marker_is_quarantined_once() {
   ack_wakes "$state" || fail "malformed-marker handling acknowledgement failed"
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/stable-successor.out"
   is_live_non_zombie "$ARM_PID" || fail "malformed marker caused a persistent recovery loop"
-  kill "$ARM_PID" 2>/dev/null || true
-  wait "$ARM_PID" 2>/dev/null || true
+  stop_rearm_arm "$state" "$ARM_PID"
   pass "watch-arm: malformed recovery state is quarantined without a successor loop"
 }
 
@@ -655,23 +662,32 @@ test_handling_window_close_keeps_the_acknowledgement_valid() {
   sequence=${pair%%$'\t'*}
   generation=${pair##*$'\t'}
 
-  # One full watcher cycle appends a wake and then closes inside the handling window.
+  # One live watcher appends a wake inside the handling window without closing a
+  # second cycle. The original acknowledgement remains valid; once it consumes
+  # its sequence, the surviving row reopens one bounded recovery notification.
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/handling-window-arm.out"
   is_live_non_zombie "$ARM_PID" || fail "handling-window watcher did not stay live"
   printf 'done: wake published during handling\n' > "$state/during-handling.status"
-  wait_for_exit "$ARM_PID" 120 || fail "handling-window watcher did not deliver its wake"
-  grep "$(printf '\tsignal\tduring-handling.status\t')" "$state/.wake-queue" >/dev/null \
+  wait_for_file_text "$state/.wake-queue" "$(printf '\tsignal\tduring-handling.status\t')" \
     || fail "handling-window watcher did not durably append its wake"
+  is_live_non_zombie "$ARM_PID" \
+    || fail "handling-window watcher closed a duplicate notification cycle"
+  ! grep -qE '^(signal:|stale:|check:|heartbeat)' "$dir/handling-window-arm.out" \
+    || fail "handling-window watcher printed a duplicate notification: $(cat "$dir/handling-window-arm.out")"
 
-  [ "$(cat "$state/.watcher-down" 2>/dev/null || true)" = "pending:downtime:$generation" ] \
-    || fail "repeated publications during handling replaced the outstanding recovery generation"
+  [ "$(cat "$state/.watcher-down" 2>/dev/null || true)" = "pending:handling:$generation" ] \
+    || fail "a coalesced append reopened or replaced the outstanding handling generation"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" \
     --recovery-generation "$generation" 2> "$dir/ack.err" \
-    || fail "the printed acknowledgement was rejected after repeated publications: $(cat "$dir/ack.err")"
+    || fail "the printed acknowledgement was rejected after the coalesced append: $(cat "$dir/ack.err")"
   ! grep "$(printf '\tsignal\thandled.status\t')" "$state/.wake-queue" >/dev/null \
     || fail "the acknowledged wake was not consumed"
   grep "$(printf '\tsignal\tduring-handling.status\t')" "$state/.wake-queue" >/dev/null \
     || fail "the newer handling-window wake was over-consumed"
+  wait_for_exit "$ARM_PID" 120 \
+    || fail "the surviving handling-window wake did not reopen notification after acknowledgement"
+  grep -F 'check: rearm-resurface' "$dir/handling-window-arm.out" >/dev/null \
+    || fail "the handling-window survivor did not emit one bounded recovery reason"
 
   FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/remaining-drain.out" \
     2> "$dir/remaining-drain.err" || fail "remaining wake could not be re-drained"
@@ -696,7 +712,7 @@ test_handling_window_close_keeps_the_acknowledgement_valid() {
   wait_for_exit "$ARM_PID" 120 || fail "the live watcher did not surface a later wake"
   grep -q '^signal:' "$dir/next-arm.out" \
     || fail "the watcher armed after acknowledgement never reached real supervision work: $(cat "$dir/next-arm.out")"
-  pass "watch-arm: a watcher close during handling keeps the printed acknowledgement valid"
+  pass "watch-arm: handling-window events coalesce, keep the printed acknowledgement valid, and re-notify only after ack"
 }
 
 # Exercise the moved-generation recovery invariant owned by

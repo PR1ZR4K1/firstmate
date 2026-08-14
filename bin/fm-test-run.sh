@@ -151,7 +151,7 @@ family_for_basename() {
       ;;
     fm-daemon.test.sh|fm-guard-stale-banner.test.sh|fm-pi-watch-extension.test.sh|\
     fm-session-lock-ancestry.test.sh|\
-    fm-supervision-events.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
+    fm-supervision-events.test.sh|fm-supervision-flood.test.sh|fm-turnend-guard.test.sh|fm-wake-daemon-lifecycle-e2e.test.sh|\
     fm-wake-queue.test.sh|fm-watch-arm.test.sh|fm-watch-checkpoint.test.sh|fm-watch-triage.test.sh|\
     fm-watcher-lock.test.sh|fm-inactive-reconcile.test.sh)
       printf '%s\n' watcher-wake-lock
@@ -434,6 +434,7 @@ tests/fm-spawn-worktree-settle.test.sh 4598
 tests/fm-startup-memory-budget.test.sh 4260
 tests/fm-subagent-pretool-check.test.sh 901
 tests/fm-supervision-events.test.sh 413
+tests/fm-supervision-flood.test.sh 58000
 tests/fm-tangle-guard.test.sh 7230
 tests/fm-teardown-endpoint-safety.test.sh 1073
 tests/fm-teardown.test.sh 23237

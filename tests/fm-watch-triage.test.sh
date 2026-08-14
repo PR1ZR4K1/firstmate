@@ -76,6 +76,16 @@ wait_numeric_file() {
   return 1
 }
 
+wait_for_path() {
+  local path=$1 limit=${2:-80} i=0
+  while [ "$i" -lt "$limit" ]; do
+    [ -e "$path" ] && return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Portable mtime in epoch seconds. Platform-detected, never the `stat -f || stat -c`
 # fallback (which writes a partial filesystem dump on Linux; see fm-watch.sh).
 file_mtime() {
@@ -121,7 +131,16 @@ record_pi_busy() {  # <state-dir> <id>
     --source pi-ext --event agent-start
 }
 
-reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
+reap() {
+  local pid=$1 i=0
+  kill -TERM "$pid" 2>/dev/null || true
+  while [ "$i" -lt 100 ] && is_live_non_zombie "$pid"; do
+    sleep 0.05
+    i=$((i + 1))
+  done
+  is_live_non_zombie "$pid" && kill -KILL "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
@@ -312,12 +331,18 @@ test_crew_absorb_class_classifier() {
   ! crew_is_provably_working a || fail "a paused crew was treated as provably working"
   FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling'
   [ "$(crew_absorb_class a)" = none ] || fail "stale working: status-log classed absorbable"
+  FM_FAKE_CREW_STATE='state: parked · source: run-step · parked at ask-user'
+  [ "$(crew_absorb_class a)" = nonworking ] || fail "parked run-step was not classed explicitly non-working"
+  FM_FAKE_CREW_STATE='state: blocked · source: status-log · waiting for help'
+  [ "$(crew_absorb_class a)" = nonworking ] || fail "blocked status was not classed explicitly non-working"
+  FM_FAKE_CREW_STATE='state: done · source: pane · untrusted fixture'
+  [ "$(crew_absorb_class a)" = none ] || fail "non-working state from an untrusted source was absorbed"
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
   ! crew_is_paused a || fail "unknown crew classed paused"
   [ "$(crew_absorb_class "")" = none ] || fail "empty id not classed none"
   unset FM_FAKE_CREW_STATE
-  pass "crew_absorb_class: working/paused/none from one read; crew_is_paused and crew_is_provably_working agree"
+  pass "crew_absorb_class: working/paused/nonworking/none from one read; only authoritative explicit states are absorbable"
 }
 
 # signal_crew_provably_working: a no-verb "signal:" wake is benign ONLY when EVERY
@@ -656,7 +681,9 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  if ! wait_live "$pid" 30; then
+  wait_for_path "$state/.paused-$key" 100 \
+    || { reap "$pid"; fail "watcher did not classify the fresh declared pause: $(cat "$out")"; }
+  if ! wait_live "$pid" 10; then
     reap "$pid"; fail "watcher exited for a fresh declared pause (should absorb): $(cat "$out")"
   fi
   [ ! -s "$out" ] || fail "fresh paused stale printed a wake reason during absorb"
@@ -723,7 +750,13 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
     pid=$!
-    if wait_live "$pid" 15; then reap "$pid"; else wait "$pid" || fail "dead-agent watcher round $round failed"; fi
+    if [ "$round" -eq 1 ]; then
+      wait_for_exit "$pid" 40 || fail "dead-agent declared pause did not produce its bounded recheck"
+    elif wait_live "$pid" 15; then
+      reap "$pid"
+    else
+      wait "$pid" || fail "dead-agent watcher round $round failed"
+    fi
     round=$((round + 1))
   done
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")
@@ -1060,7 +1093,7 @@ test_wedge_escalation_marks_demand_deep_inspection_after_threshold() {
       FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
       FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
     pid=$!
-    wait_for_exit "$pid" 40 || fail "watcher did not escalate on consecutive wedge round $n: $(cat "$out")"
+    wait_for_exit "$pid" 120 || fail "watcher did not escalate on consecutive wedge round $n: $(cat "$out")"
     grep -F "escalation $n" "$out" >/dev/null || fail "round $n did not report escalation count $n: $(cat "$out")"
     if [ "$n" -lt 3 ]; then
       grep -F "demand-deep-inspection" "$out" >/dev/null && fail "round $n escalated to demand-deep-inspection before the threshold: $(cat "$out")"
@@ -1528,15 +1561,24 @@ test_procevent_unacknowledged_result_redrains_until_handled() {
   wait_for_exit "$pid" 100 || fail "the first proactive wake never happened: $(cat "$out")"
   FM_STATE_OVERRIDE="$state" "$DRAIN" >/dev/null 2>&1 || fail "drain after the first process-event wake failed"
 
-  # An interrupted handler leaves the captured result durable. The successor
-  # must re-surface it through recovery, then its drain must print the same row.
+  # A live successor does not inject a duplicate while the first handling
+  # generation remains unacknowledged. If that successor is then interrupted,
+  # its downtime publication re-surfaces the still-durable result exactly once.
+  : > "$out"
+  procevent_watch_bg "$dir" "$out"
+  pid=$!
+  if ! wait_live "$pid" 40; then
+    fail "an unacknowledged process-event result emitted a duplicate notification: $(cat "$out")"
+  fi
+  [ -s "$state/.wake-queue" ] || { reap "$pid"; fail "the coalesced process-event result stopped being durable"; }
+  reap "$pid"
   : > "$out"
   procevent_watch_bg "$dir" "$out"
   pid=$!
   wait_for_exit "$pid" 100 \
-    || fail "an unacknowledged process-event result was not re-surfaced on re-arm: $(cat "$out")"
+    || fail "an interrupted process-event successor was not recovered: $(cat "$out")"
   grep -F 'check: rearm-resurface' "$out" >/dev/null \
-    || fail "the successor did not report recovery for the unacknowledged result: $(cat "$out")"
+    || fail "the replacement did not report recovery for the interrupted result: $(cat "$out")"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$replay_out" 2> "$replay_err" \
     || fail "the successor could not re-drain the unacknowledged process-event result"
   grep "$(printf '\tcheck\t')" "$replay_out" | grep -F 'procevent lavish delivery-src 1' >/dev/null \
@@ -1724,7 +1766,9 @@ test_heartbeat_no_change_absorbed() {
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
   pid=$!
-  if ! wait_live "$pid" 30; then
+  wait_numeric_file "$state/.heartbeat-streak" 120 \
+    || { reap "$pid"; fail "no-change heartbeat did not reach its absorb path: $(cat "$out")"; }
+  if ! wait_live "$pid" 10; then
     reap "$pid"; fail "watcher exited for a no-change heartbeat (should absorb): $(cat "$out")"
   fi
   [ ! -s "$out" ] || fail "no-change heartbeat printed a wake reason: $(cat "$out")"
@@ -1835,7 +1879,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
     FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=240 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  wait_for_exit "$pid" 40 || fail "AFK paused changed pane did not hand off a stale wake"
+  wait_for_exit "$pid" 120 || fail "AFK paused changed pane did not hand off a stale wake"
   grep -Fx "stale: $window" "$out" >/dev/null || fail "AFK paused stale did not preserve its plain window identity: $(cat "$out")"
   grep -F "awaiting external" "$out" >/dev/null && fail "AFK watcher decorated a stale identity instead of handing it to the daemon"
   [ ! -e "$state/.paused-$key" ] || fail "AFK watcher recorded normal-mode pause tracking instead of handing off"

@@ -179,6 +179,14 @@ if [ -n "$ACK_THROUGH" ]; then
         ;;
     esac
   else
+    # Rows above the handled sequence joined this notification while it was in
+    # flight. Reopen downtime under the same generation before publishing the
+    # shortened queue so the live watcher (or the next arm) delivers one bounded
+    # follow-up instead of leaving those racing sources behind a handling marker.
+    fm_recovery_marker_publish "$RECOVERY_MARKER" downtime || {
+      echo "wake drain: surviving wakes could not be republished safely; re-run bin/fm-wake-drain.sh" >&2
+      exit 1
+    }
     fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
     RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN
     if [ "${RECOVERY_MARKER_TOKEN##*:}" != "$ACK_GENERATION" ]; then

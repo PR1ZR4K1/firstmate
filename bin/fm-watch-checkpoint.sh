@@ -51,6 +51,54 @@ ERR=$(mktemp "${TMPDIR:-/tmp}/fm-watch-checkpoint.err.XXXXXX") || {
 }
 trap 'rm -f "$OUT" "$ERR"' EXIT
 
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+CHECKPOINT_RECOVERY_MARKER="$STATE/.watcher-down"
+CHECKPOINT_RECOVERY_BEFORE_PRESENT=0
+if [ -e "$CHECKPOINT_RECOVERY_MARKER" ] || [ -L "$CHECKPOINT_RECOVERY_MARKER" ]; then
+  CHECKPOINT_RECOVERY_BEFORE_PRESENT=1
+fi
+fm_recovery_marker_snapshot "$CHECKPOINT_RECOVERY_MARKER" || true
+CHECKPOINT_RECOVERY_BEFORE=$FM_RECOVERY_MARKER_TOKEN
+
+quiet_checkpoint_cleanup() {
+  local lock="$STATE/.watch.lock" marker=$CHECKPOINT_RECOVERY_MARKER
+  local i=0 token generation cleanup_status=0
+
+  # The timeout can land before the watcher installs its EXIT trap. Acquire the
+  # singleton ourselves after its process dies so the ordinary stale-owner guard
+  # performs the only safe reclaim; never remove a live or inconclusive owner.
+  while [ "$i" -lt 50 ]; do
+    if fm_lock_try_acquire "$lock"; then
+      fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+      fm_recovery_marker_snapshot "$marker" || true
+      token=$FM_RECOVERY_MARKER_TOKEN
+      # A quiet, intentionally bounded checkpoint is not a downtime episode.
+      # Retire only the episode this checkpoint created, and only while the queue
+      # lock proves that no actionable row raced the timeout. Pre-existing pending
+      # or malformed recovery evidence belongs to another handling turn.
+      if [ ! -s "$FM_WAKE_QUEUE" ]; then
+        case "$CHECKPOINT_RECOVERY_BEFORE_PRESENT:$CHECKPOINT_RECOVERY_BEFORE:$token" in
+          0::pending:*|1:acked:*:pending:*)
+            generation=${token##*:}
+            fm_recovery_marker_ack "$marker" "$generation" || cleanup_status=1
+            ;;
+        esac
+      fi
+      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      fm_lock_release "$lock"
+      return "$cleanup_status"
+    fi
+    # A just-killed child may remain a short-lived zombie after the Perl timeout
+    # parent exits. Give that exact owner time to disappear; a genuinely live
+    # external watcher remains untouched and is accepted after the bounded wait.
+    sleep 0.1
+    i=$((i + 1))
+  done
+  fm_pid_alive "${FM_LOCK_HELD_PID:-}" && return 0
+  return 1
+}
+
 run_with_perl_timeout() {
   perl -e '
     my $seconds = shift;
@@ -65,6 +113,7 @@ run_with_perl_timeout() {
       kill "TERM", -$pid;
       select undef, undef, undef, 0.2;
       kill "KILL", -$pid;
+      waitpid $pid, 0;
       exit 124;
     };
     alarm $seconds;
@@ -100,6 +149,10 @@ if grep -E '^watcher: already running' "$OUT" "$ERR" >/dev/null 2>&1; then
 fi
 
 if [ "$RC" -eq 124 ]; then
+  if ! quiet_checkpoint_cleanup; then
+    echo "checkpoint: timed-out watcher cleanup could not be confirmed" >&2
+    exit 1
+  fi
   printf 'checkpoint: no actionable wake within %ss\n' "$SECONDS_ARG"
   exit 124
 fi

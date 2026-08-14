@@ -84,15 +84,33 @@ triage_log() {
   fi
 }
 
-# Exit after reporting one actionable wake. Tests override this callback.
+# Report the first actionable wake in a handling generation and exit.
+# Later normal-mode wakes join that generation durably and return to the loop.
+# Tests override this callback.
 wake() {
-  local output_status=0
+  local output_status=0 post_output_action=$FM_WAKE_POST_OUTPUT_ACTION
+  FM_WAKE_POST_OUTPUT_ACTION=
   case "$1" in
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
   esac
+  # Normal-mode events that arrive while one recovery generation is already
+  # being handled stay durable without closing another watcher cycle. The
+  # acknowledgement republishes downtime when any higher-sequence row survives,
+  # which makes this live watcher surface one bounded follow-up after handling.
+  # Away mode keeps its existing one-shot contract because its daemon drains and
+  # classifies each watcher close itself before batching captain notifications.
+  if [ ! -e "$STATE/.afk" ] \
+    && fm_recovery_marker_notification_in_flight "$STATE/.watcher-down"; then
+    triage_log "coalesced actionable wake into active handling generation: $1"
+    if [ -n "$post_output_action" ]; then
+      "$post_output_action" 0 || true
+    fi
+    return 0
+  fi
+
   trap '' HUP INT TERM
-  [ -z "$FM_WAKE_POST_OUTPUT_ACTION" ] || trap '' PIPE
+  [ -z "$post_output_action" ] || trap '' PIPE
   if echo "$1"; then
     output_status=0
     watch_delivery_publish "$1" || true
@@ -101,8 +119,8 @@ wake() {
   else
     output_status=1
   fi
-  if [ -n "$FM_WAKE_POST_OUTPUT_ACTION" ]; then
-    "$FM_WAKE_POST_OUTPUT_ACTION" "$output_status" || true
+  if [ -n "$post_output_action" ]; then
+    "$post_output_action" "$output_status" || true
   fi
   [ "$output_status" -eq 0 ] || exit "$output_status"
   exit 0

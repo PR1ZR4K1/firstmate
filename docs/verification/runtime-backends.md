@@ -6,6 +6,24 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Shared supervision notification path
+
+The five-worker notification-flood correction received a backend applicability review on 2026-08-14.
+No backend owns conversational delivery or durable batching: every backend reaches `bin/fm-watch.sh`, and every actionable path reaches the shared wake owner in `bin/fm-wake-lib.sh` before a primary harness observes the watcher or arm result.
+
+| Backend | Actionable source reviewed | Applicability result |
+| --- | --- | --- |
+| tmux | Polling capture, task status, and turn-end records | Uses the shared signal/stale batching unchanged. |
+| Herdr | Native blocked transition plus polling fallback | `bin/fm-push-transition-lib.sh` appends through the same wake owner; no parallel event queue was added. |
+| Zellij | Adapter capture and lifecycle records through the poll loop | Uses the shared batching unchanged. |
+| Orca | Adapter lifecycle and capture records through the poll loop | Uses the shared batching unchanged. |
+| cmux | Adapter lifecycle and capture records through the poll loop | Uses the shared batching unchanged. |
+
+The portable five-worker regression in `tests/fm-supervision-flood.test.sh` exercises the backend-neutral boundary with tmux-shaped task records, while `tests/fm-supervision-events.test.sh` exercises Herdr's native transition splice.
+`tests/fm-watch-triage.test.sh`, `tests/fm-wake-queue.test.sh`, and `tests/fm-wake-daemon-lifecycle-e2e.test.sh` cover the common poll, durability, and away-mode paths.
+All exited zero in the bounded 2026-08-14 verification pass.
+Live backend capability claims remain in their version-scoped sections below; this review establishes shared-path applicability rather than pretending to refresh those live versions.
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.
