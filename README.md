@@ -224,4 +224,5 @@ Contributions are welcome - see [CONTRIBUTING.md](CONTRIBUTING.md) for the workf
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+Firstmate is MIT-licensed - see [LICENSE](LICENSE).
+The adapted third-party material in `firstmate-web-design` retains its provenance and terms in [SOURCES.lock.json](.agents/skills/firstmate-web-design/SOURCES.lock.json) and the adjacent [license copies](.agents/skills/firstmate-web-design/licenses/).
