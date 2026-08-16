@@ -1,0 +1,457 @@
+.fm-tweaks-launcher,
+.fm-tweaks-panel {
+  color-scheme: light dark;
+  min-inline-size: 0;
+  margin-inline: clamp(0.75rem, 3vw, 2rem);
+}
+
+.fm-tweaks-launcher {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.fm-tweaks-toggle,
+.fm-tweaks-close,
+.fm-tweaks-panel button,
+.fm-tweaks-panel select,
+.fm-tweaks-panel input,
+.fm-tweaks-panel textarea {
+  min-block-size: 2.75rem;
+}
+
+.fm-tweaks-toggle,
+.fm-tweaks-close,
+.fm-tweaks-panel button {
+  border: 1px solid #7f8b86;
+  border-radius: 0.45rem;
+  background: #f7f3ea;
+  color: #17221f;
+  padding: 0.65rem 0.85rem;
+  font-weight: 760;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.fm-tweaks-toggle {
+  border-color: #17221f;
+  background: #17221f;
+  color: #fffdf8;
+}
+
+.fm-tweaks-close {
+  flex: 0 0 auto;
+  min-inline-size: 4.25rem;
+}
+
+.fm-tweaks-panel {
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid #89938e;
+  border-block-start: 0.4rem solid #c65a3a;
+  border-radius: 0.65rem;
+  background: #fffdf8;
+  box-shadow: 0 1rem 3rem rgb(29 42 38 / 16%);
+  color: #17221f;
+  padding: clamp(1rem, 3vw, 1.4rem);
+}
+
+.fm-tweaks-panel[hidden] {
+  display: none;
+}
+
+.fm-tweaks-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.fm-tweaks-panel h2,
+.fm-tweaks-panel p {
+  margin-block: 0;
+}
+
+.fm-tweaks-panel h2 {
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-size: clamp(1.55rem, 3vw, 2.1rem);
+  letter-spacing: -0.025em;
+  line-height: 1;
+}
+
+.fm-tweaks-kicker {
+  margin-block-end: 0.3rem !important;
+  color: #9a3f28;
+  font-size: 0.72rem;
+  font-weight: 850;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fm-tweaks-description,
+.fm-tweaks-help,
+.fm-tweaks-boundary,
+.fm-tweaks-status {
+  color: #52605b;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.fm-tweaks-description {
+  margin-block-start: 0.6rem !important;
+}
+
+.fm-tweaks-section,
+.fm-tweaks-controls {
+  min-inline-size: 0;
+  margin: 1.15rem 0 0;
+  border: 1px solid #c9cfca;
+  border-radius: 0.5rem;
+  padding: 0.8rem;
+}
+
+.fm-tweaks-section legend,
+.fm-tweaks-controls legend {
+  max-inline-size: 100%;
+  padding-inline: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+}
+
+.fm-tweaks-field,
+.fm-tweaks-control {
+  display: grid;
+  grid-template-columns: minmax(7rem, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem 0.75rem;
+  min-inline-size: 0;
+}
+
+.fm-tweaks-field + .fm-tweaks-field,
+.fm-tweaks-control + .fm-tweaks-control {
+  margin-block-start: 0.75rem;
+}
+
+.fm-tweaks-field label,
+.fm-tweaks-control label,
+.fm-tweaks-section > label {
+  font-size: 0.85rem;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.fm-tweaks-field select,
+.fm-tweaks-control input:not([type="checkbox"]),
+.fm-tweaks-control select,
+.fm-tweaks-section textarea {
+  inline-size: 100%;
+  max-inline-size: 100%;
+  border: 1px solid #7f8b86;
+  border-radius: 0.35rem;
+  background: #fffdf8;
+  color: #17221f;
+  padding: 0.55rem 0.65rem;
+}
+
+.fm-tweaks-control input[type="checkbox"] {
+  inline-size: 2.75rem;
+  block-size: 2.75rem;
+  margin: 0;
+}
+
+.fm-tweaks-control input[type="color"] {
+  padding: 0.25rem;
+}
+
+.fm-tweaks-control__value {
+  grid-column: 2;
+  min-block-size: 1.3rem;
+  color: #52605b;
+  font-size: 0.76rem;
+}
+
+.fm-tweaks-choice-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.fm-tweaks-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-block-size: 2.75rem;
+  border: 1px solid #aab2ae;
+  border-radius: 0.4rem;
+  padding: 0.5rem;
+  font-size: 0.83rem;
+  font-weight: 720;
+  line-height: 1.25;
+}
+
+.fm-tweaks-choice input {
+  inline-size: 1.25rem;
+  min-block-size: 1.25rem;
+  margin: 0;
+}
+
+.fm-tweaks-renderer-host {
+  min-inline-size: 0;
+}
+
+.fm-tweaks-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.fm-tweaks-section > label[for="fm-tweaks-import"] {
+  display: block;
+  margin-block-start: 1rem;
+}
+
+.fm-tweaks-section textarea {
+  display: block;
+  min-block-size: 7.5rem;
+  margin-block-start: 0.4rem;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.fm-tweaks-help {
+  margin-block: 0.4rem 0.65rem !important;
+}
+
+.fm-tweaks-boundary {
+  margin-block-start: 1rem !important;
+  border-inline-start: 0.3rem solid #c65a3a;
+  padding-inline-start: 0.75rem;
+}
+
+.fm-tweaks-status {
+  min-block-size: 2.75rem;
+  margin-block-start: 0.75rem !important;
+  border-radius: 0.35rem;
+  background: #edf2ed;
+  color: #26332f;
+  padding: 0.65rem 0.75rem;
+}
+
+.fm-tweaks-status[role="alert"] {
+  border: 2px solid #a82e22;
+  background: #fff0ec;
+  color: #6f1f19;
+}
+
+.fm-tweakpane-host {
+  --tp-base-background-color: hsl(45deg 30% 97%);
+  --tp-base-shadow-color: hsla(155deg 18% 12% / 18%);
+  --tp-button-background-color: hsl(155deg 12% 84%);
+  --tp-button-background-color-active: hsl(155deg 12% 72%);
+  --tp-button-background-color-focus: hsl(155deg 12% 78%);
+  --tp-button-background-color-hover: hsl(155deg 12% 80%);
+  --tp-button-foreground-color: hsl(155deg 18% 12%);
+  --tp-container-background-color: hsl(155deg 10% 90%);
+  --tp-container-background-color-active: hsl(155deg 10% 78%);
+  --tp-container-background-color-focus: hsl(155deg 10% 84%);
+  --tp-container-background-color-hover: hsl(155deg 10% 87%);
+  --tp-container-foreground-color: hsl(155deg 18% 17%);
+  --tp-groove-foreground-color: hsl(14deg 53% 51%);
+  --tp-input-background-color: hsl(45deg 28% 100%);
+  --tp-input-background-color-active: hsl(45deg 18% 90%);
+  --tp-input-background-color-focus: hsl(45deg 20% 94%);
+  --tp-input-background-color-hover: hsl(45deg 24% 97%);
+  --tp-input-foreground-color: hsl(155deg 18% 12%);
+  --tp-label-foreground-color: hsl(155deg 12% 30%);
+  --tp-monitor-background-color: hsl(155deg 15% 12%);
+  --tp-monitor-foreground-color: hsl(105deg 55% 68%);
+  --tp-base-border-radius: 4px;
+  --tp-blade-unit-size: 44px;
+  --tp-base-font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  --tp-base-font-size: 12px;
+  min-inline-size: 0;
+}
+
+.fm-tweakpane-host > div,
+.fm-tweakpane-host [role="group"] {
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+.fm-tweakpane-host :is(input, button, select, [tabindex="0"]):not([type="checkbox"]) {
+  min-block-size: 2.75rem;
+}
+
+.fm-tweakpane-host button {
+  min-inline-size: 2.75rem;
+}
+
+.fm-tweakpane-host input[type="checkbox"] {
+  min-inline-size: 2.75rem;
+  min-block-size: 2.75rem;
+}
+
+.fm-tweakpane-host :focus-visible {
+  outline: 3px solid #1261a0 !important;
+  outline-offset: 2px !important;
+}
+
+@media (min-width: 900px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr) minmax(20rem, 24rem);
+    grid-template-rows: auto auto;
+    padding-inline: clamp(1rem, 3vw, 3rem);
+  }
+
+  .fixture-region {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .fm-tweaks-launcher {
+    grid-column: 2;
+    grid-row: 1;
+    margin-inline: 0;
+  }
+
+  .fm-tweaks-panel {
+    position: sticky;
+    inset-block-start: 1rem;
+    grid-column: 2;
+    grid-row: 2;
+    max-block-size: calc(100vh - 5.5rem);
+    margin-inline: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-width: 540px) {
+  .fm-tweaks-field,
+  .fm-tweaks-control {
+    grid-template-columns: 1fr;
+  }
+
+  .fm-tweaks-control__value {
+    grid-column: 1;
+  }
+
+  .fm-tweaks-choice-row,
+  .fm-tweaks-action-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .fm-tweaks-toggle,
+  .fm-tweaks-close,
+  .fm-tweaks-panel button {
+    border-color: #788580;
+    background: #27322e;
+    color: #f2f4f1;
+  }
+
+  .fm-tweaks-toggle {
+    background: #f2f4f1;
+    color: #17221f;
+  }
+
+  .fm-tweaks-panel {
+    border-color: #66736e;
+    background: #1b2522;
+    color: #f2f4f1;
+  }
+
+  .fm-tweaks-kicker {
+    color: #ff9d7e;
+  }
+
+  .fm-tweaks-description,
+  .fm-tweaks-help,
+  .fm-tweaks-boundary,
+  .fm-tweaks-control__value {
+    color: #bdc6c1;
+  }
+
+  .fm-tweaks-section,
+  .fm-tweaks-controls,
+  .fm-tweaks-choice {
+    border-color: #56635e;
+  }
+
+  .fm-tweaks-field select,
+  .fm-tweaks-control input:not([type="checkbox"]),
+  .fm-tweaks-control select,
+  .fm-tweaks-section textarea {
+    border-color: #788580;
+    background: #121a17;
+    color: #f2f4f1;
+  }
+
+  .fm-tweaks-status {
+    background: #26332f;
+    color: #f2f4f1;
+  }
+
+  .fm-tweaks-status[role="alert"] {
+    border-color: #ff8f80;
+    background: #3d1c18;
+    color: #ffd6cf;
+  }
+
+  .fm-tweakpane-host {
+    --tp-base-background-color: hsl(155deg 18% 13%);
+    --tp-button-background-color: hsl(155deg 12% 28%);
+    --tp-button-background-color-active: hsl(155deg 12% 42%);
+    --tp-button-background-color-focus: hsl(155deg 12% 36%);
+    --tp-button-background-color-hover: hsl(155deg 12% 32%);
+    --tp-button-foreground-color: hsl(105deg 12% 92%);
+    --tp-container-background-color: hsl(155deg 14% 18%);
+    --tp-container-background-color-active: hsl(155deg 14% 34%);
+    --tp-container-background-color-focus: hsl(155deg 14% 28%);
+    --tp-container-background-color-hover: hsl(155deg 14% 23%);
+    --tp-container-foreground-color: hsl(105deg 12% 92%);
+    --tp-groove-foreground-color: hsl(14deg 73% 68%);
+    --tp-input-background-color: hsl(155deg 18% 9%);
+    --tp-input-background-color-active: hsl(155deg 18% 24%);
+    --tp-input-background-color-focus: hsl(155deg 18% 18%);
+    --tp-input-background-color-hover: hsl(155deg 18% 14%);
+    --tp-input-foreground-color: hsl(105deg 12% 92%);
+    --tp-label-foreground-color: hsl(105deg 10% 76%);
+  }
+
+  .fm-tweakpane-host :focus-visible {
+    outline-color: #79c7ff !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .fm-tweaks-panel,
+  .fm-tweaks-section,
+  .fm-tweaks-controls,
+  .fm-tweaks-choice,
+  .fm-tweaks-status {
+    border: 2px solid CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+
+  .fm-tweaks-panel button,
+  .fm-tweaks-panel input,
+  .fm-tweaks-panel select,
+  .fm-tweaks-panel textarea {
+    forced-color-adjust: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fm-tweaks-panel,
+  .fm-tweaks-panel * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

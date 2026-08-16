@@ -1,0 +1,23 @@
+{
+  "name": "@firstmate/design-tweaks-proof",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "build:assert": "npm run build && node scripts/assert-production-absence.mjs",
+    "build:development": "vite build --mode development --outDir dist-development",
+    "dev": "vite --host 127.0.0.1",
+    "test": "npm run test:core && npm run build:assert",
+    "test:core": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "tweakpane": "4.0.5"
+  },
+  "devDependencies": {
+    "vite": "8.2.1"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "schema": "firstmate.design-tweaks-visual-evidence/v1",
+  "capturedOn": "2026-08-15",
+  "captureTool": "chrome-devtools-axi 0.1.29",
+  "conditions": {
+    "fontsSettled": true,
+    "animationsDisabled": true,
+    "transitionsDisabled": true,
+    "caretHidden": true,
+    "content": "deterministic-synthetic-only"
+  },
+  "comparisonTolerance": {
+    "scope": "same pinned host and browser",
+    "changedPixelPercentMaximum": 0.1,
+    "perChannelDeltaMaximum": 8,
+    "crossHostPolicy": "inspect and recapture with new hashes"
+  },
+  "captures": [
+    {
+      "path": "desktop-native-baseline.png",
+      "sha256": "11df9d5217ba46b736af1ed64789d2b69c7f2ed5a979e41ae48500d9c62615ba",
+      "pixelWidth": 1440,
+      "pixelHeight": 1116,
+      "viewport": { "width": 1440, "height": 900 },
+      "renderer": "native",
+      "preset": "baseline",
+      "theme": "light"
+    },
+    {
+      "path": "desktop-tweakpane-nondefault.png",
+      "sha256": "d95230b4b8a005042a38c970e0c73e4825107c373915492035e4bb5c438144cf",
+      "pixelWidth": 1440,
+      "pixelHeight": 1116,
+      "viewport": { "width": 1440, "height": 900 },
+      "renderer": "tweakpane-4.0.5",
+      "preset": "non-default",
+      "theme": "light"
+    },
+    {
+      "path": "mobile-native-baseline.png",
+      "sha256": "391ac2b6126644e403ece946a1771c5d7b6fd63c7a2b5e625c114a4f735a014c",
+      "pixelWidth": 375,
+      "pixelHeight": 2560,
+      "viewport": { "width": 375, "height": 667 },
+      "renderer": "native",
+      "preset": "baseline",
+      "theme": "light"
+    },
+    {
+      "path": "mobile-tweakpane-nondefault.png",
+      "sha256": "3eea6f17dcd315b0847695816915cb055ac2abefad000dd50507ecc56af3874c",
+      "pixelWidth": 375,
+      "pixelHeight": 2426,
+      "viewport": { "width": 375, "height": 667 },
+      "renderer": "tweakpane-4.0.5",
+      "preset": "non-default-localization",
+      "theme": "dark"
+    }
+  ]
+}

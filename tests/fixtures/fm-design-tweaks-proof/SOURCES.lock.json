@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "owner": "Firstmate synthetic development-only design tweaks proof",
+  "reviewDate": "2026-08-15",
+  "runtimePackage": {
+    "name": "tweakpane",
+    "version": "4.0.5",
+    "packageJsonPin": "4.0.5",
+    "license": "MIT",
+    "registryTarball": "https://registry.npmjs.org/tweakpane/-/tweakpane-4.0.5.tgz",
+    "npmIntegrity": "sha512-rxEXdSI+ArlG1RyO6FghC4ZUX8JkEfz8F3v1JuteXSV0pEtHJzyo07fcDG+NsJfN5L39kSbCYbB9cBGHyuI/tQ==",
+    "inspectedTarballSha256": "8cf819860e51128ea6031528c2ec6a92413785928d49c16170562d3f9f39134d",
+    "digestQualification": "The SHA-256 is reproducible local inspection evidence for the npm tarball, not publisher signing or a source-reproducibility claim.",
+    "packageLicenseMetadata": "MIT",
+    "packageLicenseFileObservation": "The npm tarball does not include a license file even though package metadata declares MIT, so the exact tagged repository license is preserved locally.",
+    "sourceRepository": "cocopon/tweakpane",
+    "sourceTag": "4.0.5",
+    "sourceTagObject": "5324cc96e61e03ffa6570a0a8563562f893fb829",
+    "sourceCommit": "f3312dd5c61905611cce79d0bffa36b2e7340daa",
+    "licenseSourcePath": "LICENSE.txt",
+    "licenseBlob": "597ee0936f67ef27bca9f11385517836a42a1bd5",
+    "localLicenseCopy": "licenses/Tweakpane-MIT.license",
+    "localLicenseSha256": "385accdd560bac0013a2965fe9d39c45808b7542d2bbb3ef0cceeb60b7da71c3",
+    "plugins": []
+  },
+  "developmentBuilder": {
+    "name": "vite",
+    "version": "8.2.1",
+    "packageJsonPin": "8.2.1",
+    "purpose": "Disposable synthetic fixture development and production-exclusion build only."
+  },
+  "updatePolicy": [
+    "Review an exact future package version, npm integrity, tarball bytes, source tag and commit, license, dependencies, scripts, network behavior, and diff before changing the pin.",
+    "Never replace the exact package pin with latest, a range, a mutable branch, or an unpinned execution.",
+    "Run the shared core corpus, both renderer browser corpus, production-absence assertion, and visual capture again before landing an update.",
+    "Require separate captain approval before adding a plugin, account, credential, remote service, telemetry, source writer, hook, MCP server, or mutable remote instruction."
+  ]
+}
