@@ -28,6 +28,8 @@ FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh mark <ci_v1_message_id> unread
 FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh delete <ci_v1_message_id>
 FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh delete read
 FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh delete unread
+FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh delete-ids read <ci_v1_message_id> [<ci_v1_message_id> ...]
+FM_HOME=<firstmate-home> bin/fm-captain-inbox.sh delete-ids unread <ci_v1_message_id> [<ci_v1_message_id> ...]
 ```
 
 The command accepts no file-path argument.
@@ -61,6 +63,32 @@ Read state is stored independently and is the only consumer-mutable field.
 `body` is plain response text, not HTML or a template.
 A dashboard must render it as text, for example through a text node or `textContent`, and must never pass it to an HTML interpreter.
 
+### Confirmed-ID deletion
+
+`delete-ids read|unread <IDs...>` deletes a frozen, explicit selection of 1-100 unique IDs in the displayed read or unread view.
+IDs must be strings matching `ci_v1_` followed by exactly 32 lowercase hexadecimal characters.
+Under the existing store lock, the operation validates the scope, size, uniqueness, syntax, and every target's existence and current read state before writing either document.
+An absent read-state entry means unread, as in `list`.
+The scope is a precondition on these IDs, not a selector: only confirmed IDs and their corresponding read-state entries are removed.
+New arrivals and messages moved into the view after confirmation are preserved; any missing, stale, or moved-out confirmed target rejects the entire request without changing either document's content.
+The one-ID form supports explicit unread deletion without changing legacy `delete <id>`'s read-only guard.
+The operation never marks records, recalculates selection, or falls back to a state-wide command.
+
+Only after both replacements succeed, the helper prints exactly:
+
+```json
+{ "version": 1, "scope": "read", "ids": ["ci_v1_0123456789abcdef0123456789abcdef"], "deleted": 1 }
+```
+
+`scope` echoes the requested `read` or `unread` scope, `ids` echoes the confirmed IDs in input order, and `deleted` equals that array's length.
+Invalid or stale requests exit nonzero with no document writes.
+A storage write error exits nonzero without a success result and warns that the deletion outcome may be partial.
+The two atomic file replacements are not a transaction: a failure or interruption after the first replacement can leave messages removed with old read-state entries still present, and there is no two-file rollback or power-loss durability guarantee.
+A lost, truncated, or invalid response, or a transport failure, can also occur after successful deletion; an error or missing acknowledgement is not proof that nothing changed.
+Consumers must refresh and report an uncertain or partial outcome rather than automatically retry, clear unconfirmed records, or broaden deletion.
+A new destructive request requires a new confirmed selection.
+Legacy state-wide commands remain supported but are not suitable for a frozen dashboard confirmation.
+
 ## Storage and safety
 
 The producer keeps versioned private records beneath `state/captain-inbox/v1/` in the effective Firstmate home.
@@ -71,7 +99,7 @@ Malformed, linked, or unsafe records are rejected without overwriting the existi
 
 Duplicate completed-message events resolve to the same stable ID and do not create another record or reset its read state.
 The inbox retains the newest 100 messages and removes the corresponding obsolete read-state entries in the same serialized update.
-The command returns an error for a disabled inbox, malformed storage, an invalid request, an unknown or unread single-message deletion target, or a contended update instead of guessing.
+The command returns an error for a disabled inbox, malformed storage, an invalid request, an unknown or unread legacy single-message deletion target, an invalidated confirmed-ID selection, or a contended update instead of guessing.
 
 ## Support matrix
 

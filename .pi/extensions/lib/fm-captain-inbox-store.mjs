@@ -498,6 +498,45 @@ export async function deleteCaptainInboxMessage(paths, id) {
   );
 }
 
+// Scope is a precondition on a frozen confirmation, never a selector.
+export async function deleteCaptainInboxMessagesByIds(paths, scope, ids) {
+  const confirmedIds = Array.isArray(ids) ? [...ids] : ids;
+  return withStoreLock(paths, { create: false }, async () => {
+    if (
+      (scope !== "read" && scope !== "unread") ||
+      !Array.isArray(confirmedIds) ||
+      confirmedIds.length < 1 ||
+      confirmedIds.length > 100 ||
+      !confirmedIds.every((id) => typeof id === "string" && id.length === 38 && MESSAGE_ID_RE.test(id)) ||
+      new Set(confirmedIds).size !== confirmedIds.length
+    ) {
+      throw new Error("invalid Captain's Inbox delete-ids request");
+    }
+
+    const { messages, readState } = await readDocuments(paths);
+    const retainedIds = new Set(messages.messages.map((message) => message.id));
+    if (confirmedIds.some((id) =>
+      !retainedIds.has(id) || (readState.states[id]?.read === true) !== (scope === "read")
+    )) {
+      throw new Error("Captain's Inbox confirmed message was not found or changed read state; refresh the selection");
+    }
+
+    const deletedIds = new Set(confirmedIds);
+    const remaining = messages.messages.filter((message) => !deletedIds.has(message.id));
+    const states = { ...readState.states };
+    for (const id of confirmedIds) delete states[id];
+
+    try {
+      // The lock covers validation and both replacements, not a two-file transaction.
+      await writePrivateJson(paths.messages, { version: CAPTAIN_INBOX_VERSION, messages: remaining });
+      await writePrivateJson(paths.readState, { version: CAPTAIN_INBOX_VERSION, states });
+    } catch (error) {
+      throw new Error("Captain's Inbox deletion outcome may be partial; refresh before making a new deletion request", { cause: error });
+    }
+    return { version: CAPTAIN_INBOX_VERSION, scope, ids: confirmedIds, deleted: confirmedIds.length };
+  });
+}
+
 export async function deleteCaptainInboxMessagesByReadState(paths, read) {
   if (typeof read !== "boolean") {
     throw new Error("invalid Captain's Inbox delete request");
