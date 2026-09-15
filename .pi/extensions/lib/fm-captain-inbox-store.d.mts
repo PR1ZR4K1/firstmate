@@ -53,6 +53,12 @@ export function deleteCaptainInboxMessage(
   id: string,
 ): Promise<{ version: number; id: string; deleted: true }>;
 
+export function deleteCaptainInboxMessagesByIds(
+  paths: CaptainInboxPaths,
+  scope: "read" | "unread",
+  ids: readonly string[],
+): Promise<{ version: number; scope: "read" | "unread"; ids: string[]; deleted: number }>;
+
 export function deleteCaptainInboxMessagesByReadState(
   paths: CaptainInboxPaths,
   read: boolean,

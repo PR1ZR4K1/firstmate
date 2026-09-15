@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import {
   captainInboxIsEnabled,
   deleteCaptainInboxMessage,
+  deleteCaptainInboxMessagesByIds,
   deleteCaptainInboxMessagesByReadState,
   listCaptainInbox,
   markCaptainInboxMessage,
@@ -20,7 +21,8 @@ function usage() {
   process.stdout.write(
     "Usage: fm-captain-inbox.sh list\n" +
       "       fm-captain-inbox.sh mark <ci_v1_message_id> read|unread\n" +
-      "       fm-captain-inbox.sh delete <ci_v1_message_id>|read|unread\n",
+      "       fm-captain-inbox.sh delete <ci_v1_message_id>|read|unread\n" +
+      "       fm-captain-inbox.sh delete-ids read|unread <ci_v1_message_id> [<ci_v1_message_id> ...]\n",
   );
 }
 
@@ -43,6 +45,10 @@ async function main(args) {
   }
   if (args.length === 3 && args[0] === "mark" && (args[2] === "read" || args[2] === "unread")) {
     process.stdout.write(`${JSON.stringify(await markCaptainInboxMessage(paths, args[1], args[2] === "read"))}\n`);
+    return;
+  }
+  if (args[0] === "delete-ids") {
+    process.stdout.write(`${JSON.stringify(await deleteCaptainInboxMessagesByIds(paths, args[1], args.slice(2)))}\n`);
     return;
   }
   if (args.length === 2 && args[0] === "delete") {

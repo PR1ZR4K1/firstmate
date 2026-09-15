@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Behavioral contract checks for the opt-in local Captain's Inbox producer and reader.
+# Synthetic behavioral contracts for local Captain's Inbox capture, state updates,
+# and legacy/confirmed-ID deletion, including races and storage/transport failures.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -23,7 +24,7 @@ fi
 out=$(EXT="$EXT" CLI="$CLI" OPERATIONAL_INPUT="$OPERATIONAL_INPUT" TMP_ROOT="$TMP_ROOT" node --input-type=module 2>&1 <<'JS'
 import assert from "node:assert/strict";
 import { execFile as execFileCallback, execFileSync, spawn } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, readdir, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -35,15 +36,19 @@ const operationalInput = process.env.OPERATIONAL_INPUT;
 const root = process.env.TMP_ROOT;
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function cliEnvironment(home, extra = {}) {
+  return {
+    ...process.env,
+    FM_HOME: home,
+    FM_ROOT_OVERRIDE: home,
+    FM_STATE_OVERRIDE: `${home}/state`,
+    FM_CONFIG_OVERRIDE: `${home}/config`,
+    ...extra,
+  };
+}
+
 async function runCli(home, ...args) {
-  return execFile(cli, args, {
-    env: {
-      ...process.env,
-      FM_HOME: home,
-      FM_STATE_OVERRIDE: `${home}/state`,
-      FM_CONFIG_OVERRIDE: `${home}/config`,
-    },
-  });
+  return execFile(cli, args, { env: cliEnvironment(home) });
 }
 
 async function list(home) {
@@ -473,6 +478,309 @@ assert.deepEqual(
   "concurrent deletion left an orphaned read-state entry",
 );
 
+// Confirmed deletion fixtures contain only generated IDs and synthetic bodies.
+const store = await import(new URL("./lib/fm-captain-inbox-store.mjs", pathToFileURL(extensionPath)));
+const fixtureId = (index) => `ci_v1_${index.toString(16).padStart(32, "0")}`;
+const trailingNewlineId = `${fixtureId(2)}\n`;
+const fixtureTime = "2026-08-01T00:00:00.000Z";
+const fixtureRecord = (index) => ({
+  id: fixtureId(index), completed_at: fixtureTime, body: `synthetic deletion record ${index}`,
+  source: { harness: "pi", session_id: "synthetic-deletion-session" },
+});
+const storePaths = (home) => store.resolveCaptainInboxPaths({ home });
+
+async function seedConfirmedHome(name, flags) {
+  const home = await makeHome(`confirmed-${name}`);
+  const paths = storePaths(home);
+  await mkdir(paths.directory, { recursive: true, mode: 0o700 });
+  await writeFile(paths.messages, `${JSON.stringify({ version: 1, messages: flags.map((_, index) => fixtureRecord(index + 1)) })}\n`, { mode: 0o600 });
+  await writeFile(paths.readState, `${JSON.stringify({
+    version: 1,
+    states: Object.fromEntries(flags.flatMap((read, index) => read === undefined ? [] : [[fixtureId(index + 1), { read, updated_at: fixtureTime }]])),
+  })}\n`, { mode: 0o600 });
+  return home;
+}
+
+async function documentSnapshot(home) {
+  const paths = storePaths(home);
+  return Promise.all([paths.messages, paths.readState].map(async (path) => ({
+    content: await readFile(path, "utf8"), inode: (await lstat(path)).ino,
+  })));
+}
+
+async function rejectedWithoutWrites(home, args, pattern = /invalid|not found|changed read state/) {
+  const before = await documentSnapshot(home);
+  await assert.rejects(runCli(home, "delete-ids", ...args), (error) => {
+    assert.match(error.stderr, pattern);
+    assert.equal(error.stdout, "", "rejected confirmation emitted a success payload");
+    assert.notEqual(error.code, 0);
+    return true;
+  });
+  assert.deepEqual(await documentSnapshot(home), before, "rejected confirmation replaced or changed a document");
+}
+
+for (const scope of ["read", "unread"]) {
+  const selectedRead = scope === "read";
+  const confirmed = await seedConfirmedHome(`${scope}-races`, [selectedRead, !selectedRead, selectedRead]);
+  const before = await list(confirmed);
+  const selectedIds = [fixtureId(3), fixtureId(1)]; // Not storage or listing order.
+  assert.equal(before.messages.filter((message) => message.read === selectedRead).length, 2);
+  const arrival = await store.captureCaptainResponse(storePaths(confirmed), {
+    harness: "pi-signed", sessionId: "synthetic-arrival", completedAt: "2026-08-01T00:00:01.000Z", body: "synthetic unseen arrival",
+  });
+  assert.equal(arrival.captured, true);
+  if (selectedRead) await runCli(confirmed, "mark", arrival.id, "read");
+  await runCli(confirmed, "mark", fixtureId(2), scope);
+  const result = JSON.parse((await runCli(confirmed, "delete-ids", scope, ...selectedIds)).stdout);
+  assert.deepEqual(result, { version: 1, scope, ids: selectedIds, deleted: 2 });
+  const survivors = await list(confirmed);
+  assert.deepEqual(survivors.messages.map((message) => message.id).sort(), [arrival.id, fixtureId(2)].sort(), "confirmation consumed arrival or moved-in record");
+  assert.ok(survivors.messages.every((message) => message.read === selectedRead));
+  const survivorStates = JSON.parse(await readFile(storePaths(confirmed).readState, "utf8")).states;
+  assert.deepEqual(Object.keys(survivorStates).sort(), [arrival.id, fixtureId(2)].sort());
+  await rejectedWithoutWrites(confirmed, [scope, ...selectedIds]); // Stale replay.
+
+  const moved = await seedConfirmedHome(`${scope}-moved-out`, [selectedRead, selectedRead]);
+  await runCli(moved, "mark", fixtureId(2), selectedRead ? "unread" : "read");
+  await rejectedWithoutWrites(moved, [scope, fixtureId(1), fixtureId(2)]);
+  await rejectedWithoutWrites(moved, [scope, fixtureId(1), fixtureId(99)]);
+
+  for (const count of [1, 100]) {
+    const boundary = await seedConfirmedHome(`${scope}-${count}`, Array(count).fill(selectedRead));
+    const ids = Array.from({ length: count }, (_, index) => fixtureId(count - index));
+    const result = JSON.parse((await runCli(boundary, "delete-ids", scope, ...ids)).stdout);
+    assert.deepEqual(result, { version: 1, scope, ids, deleted: count });
+    assert.deepEqual(await list(boundary), { version: 1, messages: [] });
+    assert.deepEqual(JSON.parse(await readFile(storePaths(boundary).readState, "utf8")).states, {});
+  }
+}
+
+const invalidConfirmed = await seedConfirmedHome("invalid", Array(101).fill(false));
+for (const args of [
+  [], ["unread"], ["read"], ["all", fixtureId(1)], ["READ", fixtureId(1)],
+  ["true", fixtureId(1)], ["unread", fixtureId(1), fixtureId(1)],
+  ["unread", fixtureId(1), "../outside"], ["unread", ""], ["unread", "ci_v1_deadbeef"],
+  ["unread", `ci_v1_${"A".repeat(32)}`], ["unread", `${fixtureId(1)}\n`],
+  ["unread", ...Array.from({ length: 101 }, (_, index) => fixtureId(index + 1))],
+]) await rejectedWithoutWrites(invalidConfirmed, args);
+
+const invalidPaths = storePaths(invalidConfirmed);
+for (const [scope, ids] of [[true, [fixtureId(1)]], ["unread", null], ["unread", fixtureId(1)], ["unread", [1]], ["unread", [new String(fixtureId(1))]]]) {
+  const before = await documentSnapshot(invalidConfirmed);
+  await assert.rejects(store.deleteCaptainInboxMessagesByIds(invalidPaths, scope, ids), /invalid/);
+  assert.deepEqual(await documentSnapshot(invalidConfirmed), before);
+}
+
+const implicitUnread = await seedConfirmedHome("implicit-unread", [undefined, undefined]);
+assert.equal((await list(implicitUnread)).messages.every((message) => !message.read), true);
+await runCli(implicitUnread, "delete-ids", "unread", fixtureId(1));
+assert.deepEqual(JSON.parse(await readFile(storePaths(implicitUnread).readState, "utf8")).states, {}, "deletion marked an unrelated record");
+assert.deepEqual((await list(implicitUnread)).messages.map((message) => message.id), [fixtureId(2)]);
+
+const disabledConfirmed = await seedConfirmedHome("disabled", [false]);
+await writeFile(`${disabledConfirmed}/config/captain-inbox`, "off\n");
+await rejectedWithoutWrites(disabledConfirmed, ["unread", fixtureId(1)], /disabled/);
+await expectCliFailure(disabled, ["delete-ids", "unread", fixtureId(1)], /disabled/);
+assert.equal(existsSync(storePaths(disabled).root), false);
+
+for (const document of ["messages", "readState"]) {
+  for (const content of [
+    "not JSON\n",
+    '{"version":2}\n',
+    document === "messages"
+      ? `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), fixtureRecord(1)] })}\n`
+      : `${JSON.stringify({ version: 1, states: { [fixtureId(1)]: { read: "false", updated_at: fixtureTime } } })}\n`,
+    document === "messages"
+      ? `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), { ...fixtureRecord(2), id: trailingNewlineId }] })}\n`
+      : `${JSON.stringify({ version: 1, states: {
+        [fixtureId(1)]: { read: false, updated_at: fixtureTime },
+        [trailingNewlineId]: { read: false, updated_at: fixtureTime },
+      } })}\n`,
+  ]) {
+    const malformedConfirmed = await seedConfirmedHome(`malformed-${document}-${Math.random()}`, [false]);
+    await writeFile(storePaths(malformedConfirmed)[document], content);
+    await rejectedWithoutWrites(malformedConfirmed, ["unread", fixtureId(1)], /malformed/);
+  }
+  if (process.platform !== "win32") {
+    for (const kind of ["symlink", "hardlink"]) {
+      const unsafe = await seedConfirmedHome(`unsafe-${document}-${kind}`, [false]);
+      const target = storePaths(unsafe)[document];
+      const sentinel = `${unsafe}/synthetic-sentinel.json`;
+      const original = await readFile(target, "utf8");
+      await writeFile(sentinel, original, { mode: 0o600 });
+      await rm(target);
+      await (kind === "symlink" ? symlink : link)(sentinel, target);
+      await rejectedWithoutWrites(unsafe, ["unread", fixtureId(1)], /unsafe/);
+      assert.equal(await readFile(sentinel, "utf8"), original);
+    }
+  }
+}
+
+if (process.platform !== "win32") {
+  for (const directory of ["root", "directory"]) {
+    const unsafe = await seedConfirmedHome(`unsafe-${directory}`, [false]);
+    const paths = storePaths(unsafe);
+    const target = `${unsafe}/synthetic-external-store`;
+    await rename(paths[directory], target);
+    await symlink(target, paths[directory]);
+    await rejectedWithoutWrites(unsafe, ["unread", fixtureId(1)], /unsafe/);
+  }
+}
+
+const absentStore = await makeHome("confirmed-absent-store");
+await expectCliFailure(absentStore, ["delete-ids", "unread", fixtureId(1)], /does not exist/);
+assert.equal(existsSync(storePaths(absentStore).root), false);
+const missingMessages = await seedConfirmedHome("missing-messages", [false]);
+const missingPaths = storePaths(missingMessages);
+await rm(missingPaths.messages);
+const retainedState = await readFile(missingPaths.readState, "utf8");
+await expectCliFailure(missingMessages, ["delete-ids", "unread", fixtureId(1)], /not found/);
+assert.equal(existsSync(missingPaths.messages), false);
+assert.equal(await readFile(missingPaths.readState, "utf8"), retainedState);
+
+const overlapping = await seedConfirmedHome("overlapping-requests", [false, false, false]);
+const overlappingResults = await Promise.allSettled([
+  runCli(overlapping, "delete-ids", "unread", fixtureId(1), fixtureId(2)),
+  runCli(overlapping, "delete-ids", "unread", fixtureId(2), fixtureId(3)),
+  list(overlapping),
+]);
+assert.equal(overlappingResults.slice(0, 2).filter((result) => result.status === "fulfilled").length, 1);
+const rejectedOverlap = overlappingResults.slice(0, 2).find((result) => result.status === "rejected");
+assert.match(rejectedOverlap.reason.stderr, /not found/);
+assert.equal(rejectedOverlap.reason.stdout, "");
+const winningIds = JSON.parse(overlappingResults.find((result) => result.status === "fulfilled").value.stdout).ids;
+assert.deepEqual((await list(overlapping)).messages.map((message) => message.id), [fixtureId(1), fixtureId(2), fixtureId(3)].filter((id) => !winningIds.includes(id)));
+assert.equal(overlappingResults[2].status, "fulfilled");
+assert.ok([1, 3].includes(overlappingResults[2].value.messages.length), "reader observed a partially validated deletion");
+
+// Fault injection uses public Node filesystem boundaries, not implementation text.
+// It is loaded only in the synthetic CLI child, never installed in a live home.
+const faultModule = `${root}/confirmed-delete-faults.mjs`;
+await writeFile(faultModule, `
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+const originalWrite = fs.writeFile;
+const originalMkdir = fs.mkdir;
+const originalRename = fs.rename;
+const originalChmod = fs.chmod;
+const target = process.env.TEST_TARGET;
+fs.mkdir = async (path, ...args) => {
+  if (process.env.TEST_LOCK_ATTEMPT && path === process.env.TEST_LOCK) {
+    await originalWrite(process.env.TEST_LOCK_ATTEMPT, "attempted");
+  }
+  return originalMkdir(path, ...args);
+};
+function injected() { return Object.assign(new Error("synthetic write failure"), { code: "EIO" }); }
+fs.writeFile = async (path, ...args) => {
+  if (process.env.TEST_FAULT === "write" && path.startsWith(target + ".")) throw injected();
+  return originalWrite(path, ...args);
+};
+let replaced = false;
+fs.rename = async (source, destination) => {
+  if (destination === target && process.env.TEST_FAULT === "rename") throw injected();
+  const result = await originalRename(source, destination);
+  if (destination === target) replaced = true;
+  return result;
+};
+fs.chmod = async (path, ...args) => {
+  if (path === target && replaced && process.env.TEST_FAULT === "post-rename") throw injected();
+  return originalChmod(path, ...args);
+};
+if (process.env.TEST_FAULT === "transport") {
+  process.stdout.write = () => { throw Object.assign(new Error("synthetic transport failure"), { code: "EPIPE" }); };
+}
+syncBuiltinESMExports();
+`);
+function runInstrumented(home, extra, ...args) {
+  return execFile(cli, args, { env: cliEnvironment(home, {
+    NODE_OPTIONS: `--import=${pathToFileURL(faultModule).href}`, ...extra,
+  }) });
+}
+
+for (const scope of ["read", "unread"]) {
+  for (const moveOut of [false, true]) {
+    const contended = await seedConfirmedHome(`${scope}-waiting-${moveOut}`, [scope === "read", scope !== "read"]);
+    const paths = storePaths(contended);
+    await mkdir(paths.lock, { mode: 0o700 });
+    await writeFile(`${paths.lock}/owner`, `synthetic-owner\n${process.pid}`);
+    const attempt = `${contended}/lock-attempt`;
+    let settled = false;
+    const pending = runInstrumented(contended, { TEST_LOCK: paths.lock, TEST_LOCK_ATTEMPT: attempt }, "delete-ids", scope, fixtureId(1))
+      .then((value) => { settled = true; return { value }; }, (error) => { settled = true; return { error }; });
+    await eventually(() => existsSync(attempt), "delete-ids did not contend for the existing lock");
+    assert.equal(settled, false, "delete-ids ignored the held lock");
+    // This synthetic lock owner finishes an arrival/state transition after the
+    // deletion request starts, before releasing its lock to the actual CLI.
+    await writeFile(paths.messages, `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), fixtureRecord(2), fixtureRecord(3)] })}\n`);
+    await writeFile(paths.readState, `${JSON.stringify({ version: 1, states: {
+      [fixtureId(1)]: { read: moveOut ? scope !== "read" : scope === "read", updated_at: fixtureTime },
+      [fixtureId(2)]: { read: scope === "read", updated_at: fixtureTime },
+      [fixtureId(3)]: { read: scope === "read", updated_at: fixtureTime },
+    } })}\n`);
+    const beforeRelease = await documentSnapshot(contended);
+    await rm(paths.lock, { recursive: true });
+    const result = await pending;
+    if (moveOut) {
+      assert.ok(result.error, "a target moved out while waiting was deleted");
+      assert.match(result.error.stderr, /changed read state/);
+      assert.equal(result.error.stdout, "");
+      assert.deepEqual(await documentSnapshot(contended), beforeRelease);
+    } else {
+      assert.equal(result.error, undefined);
+      assert.deepEqual(JSON.parse(result.value.stdout), { version: 1, scope, ids: [fixtureId(1)], deleted: 1 });
+      assert.deepEqual((await list(contended)).messages.map((message) => message.id).sort(), [fixtureId(2), fixtureId(3)]);
+    }
+  }
+}
+
+const busyConfirmed = await seedConfirmedHome("lock-timeout", [false]);
+const busyPaths = storePaths(busyConfirmed);
+await mkdir(busyPaths.lock);
+const busyOwner = `synthetic-live-owner\n${process.pid}`;
+await writeFile(`${busyPaths.lock}/owner`, busyOwner);
+await rejectedWithoutWrites(busyConfirmed, ["unread", fixtureId(1)], /busy/);
+assert.equal(await readFile(`${busyPaths.lock}/owner`, "utf8"), busyOwner);
+
+// A caller cannot change its confirmed array while the public store awaits the lock.
+const frozen = await seedConfirmedHome("frozen-input", [false, false]);
+const frozenIds = [fixtureId(1)];
+const frozenRequest = store.deleteCaptainInboxMessagesByIds(storePaths(frozen), "unread", frozenIds);
+frozenIds[0] = fixtureId(2);
+assert.deepEqual(await frozenRequest, { version: 1, scope: "unread", ids: [fixtureId(1)], deleted: 1 });
+assert.deepEqual((await list(frozen)).messages.map((message) => message.id), [fixtureId(2)]);
+
+for (const document of ["messages", "readState"]) {
+  for (const fault of ["write", "rename", "post-rename"]) {
+    const failure = await seedConfirmedHome(`failure-${document}-${fault}`, [false, false]);
+    const paths = storePaths(failure);
+    const before = await documentSnapshot(failure);
+    await assert.rejects(runInstrumented(failure, { TEST_TARGET: paths[document], TEST_FAULT: fault }, "delete-ids", "unread", fixtureId(1)), (error) => {
+      assert.match(error.stderr, /outcome may be partial; refresh/);
+      assert.equal(error.stdout, "", "write failure claimed a successful deletion");
+      return true;
+    });
+    const after = await documentSnapshot(failure);
+    const messagesReplaced = document === "readState" || fault === "post-rename";
+    if (messagesReplaced) {
+      assert.deepEqual((await list(failure)).messages.map((message) => message.id), [fixtureId(2)]);
+    } else assert.deepEqual(after[0], before[0]);
+    if (document === "readState" && fault === "post-rename") {
+      assert.deepEqual(Object.keys(JSON.parse(after[1].content).states), [fixtureId(2)]);
+    } else assert.deepEqual(after[1], before[1], "failure falsely rolled back or changed read state");
+    assert.equal(existsSync(paths.lock), false, "failed write leaked the lock");
+    assert.equal((await readdir(paths.directory)).some((name) => name.endsWith(".tmp")), false, "failed write leaked a temporary record");
+  }
+}
+
+const transportFailure = await seedConfirmedHome("transport-failure", [false, false]);
+await assert.rejects(runInstrumented(transportFailure, { TEST_FAULT: "transport" }, "delete-ids", "unread", fixtureId(1)), (error) => {
+  assert.match(error.stderr, /synthetic transport failure/);
+  assert.equal(error.stdout, "");
+  return true;
+});
+assert.deepEqual((await list(transportFailure)).messages.map((message) => message.id), [fixtureId(2)], "transport test did not exercise committed deletion");
+await rejectedWithoutWrites(transportFailure, ["unread", fixtureId(1)]);
+
 const worker = await makeHome("worker", { lock: "1" });
 const workerRuntime = await loadExtension(worker);
 await deliver(workerRuntime);
@@ -489,4 +797,4 @@ JS
 status=$?
 [ "$status" -eq 0 ] || fail "Captain's Inbox contract failed: $out"
 [ -z "$out" ] || fail "Captain's Inbox contract printed output: $out"
-pass "Captain's Inbox is opt-in, filters only completed primary Pi responses, preserves private atomic consumer records, and supports explicit serialized deletion"
+pass "Captain's Inbox is opt-in, filters only completed primary Pi responses, preserves private consumer records, and supports legacy and confirmed-ID serialized deletion"

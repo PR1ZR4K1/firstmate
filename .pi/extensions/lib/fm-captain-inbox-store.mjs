@@ -20,6 +20,10 @@ const LOCK_RETRY_MS = 20;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const MESSAGE_ID_RE = /^ci_v1_[a-f0-9]{32}$/;
 
+function validMessageId(value) {
+  return typeof value === "string" && value.length === 38 && MESSAGE_ID_RE.test(value);
+}
+
 function asResolved(path) {
   return resolve(path);
 }
@@ -113,7 +117,7 @@ function validMessage(record) {
   return (
     record &&
     typeof record === "object" &&
-    MESSAGE_ID_RE.test(record.id) &&
+    validMessageId(record.id) &&
     validTimestamp(record.completed_at) &&
     typeof record.body === "string" &&
     record.source &&
@@ -127,7 +131,7 @@ function validMessage(record) {
 function validReadState(state) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return false;
   return Object.entries(state).every(([id, value]) =>
-    MESSAGE_ID_RE.test(id) &&
+    validMessageId(id) &&
     value &&
     typeof value === "object" &&
     typeof value.read === "boolean" &&
@@ -438,7 +442,7 @@ export async function listCaptainInbox(paths) {
 }
 
 export async function markCaptainInboxMessage(paths, id, read) {
-  if (!MESSAGE_ID_RE.test(id) || typeof read !== "boolean") {
+  if (!validMessageId(id) || typeof read !== "boolean") {
     throw new Error("invalid Captain's Inbox mark request");
   }
   return withStoreLock(paths, { create: false }, async () => {
@@ -483,7 +487,7 @@ async function deleteCaptainInboxMessages(paths, select, result) {
 }
 
 export async function deleteCaptainInboxMessage(paths, id) {
-  if (!MESSAGE_ID_RE.test(id)) {
+  if (!validMessageId(id)) {
     throw new Error("invalid Captain's Inbox delete request");
   }
   return deleteCaptainInboxMessages(
@@ -496,6 +500,45 @@ export async function deleteCaptainInboxMessage(paths, id) {
       return { version: CAPTAIN_INBOX_VERSION, id, deleted: true };
     },
   );
+}
+
+// Scope is a precondition on a frozen confirmation, never a selector.
+export async function deleteCaptainInboxMessagesByIds(paths, scope, ids) {
+  const confirmedIds = Array.isArray(ids) ? [...ids] : ids;
+  return withStoreLock(paths, { create: false }, async () => {
+    if (
+      (scope !== "read" && scope !== "unread") ||
+      !Array.isArray(confirmedIds) ||
+      confirmedIds.length < 1 ||
+      confirmedIds.length > 100 ||
+      !confirmedIds.every(validMessageId) ||
+      new Set(confirmedIds).size !== confirmedIds.length
+    ) {
+      throw new Error("invalid Captain's Inbox delete-ids request");
+    }
+
+    const { messages, readState } = await readDocuments(paths);
+    const retainedIds = new Set(messages.messages.map((message) => message.id));
+    if (confirmedIds.some((id) =>
+      !retainedIds.has(id) || (readState.states[id]?.read === true) !== (scope === "read")
+    )) {
+      throw new Error("Captain's Inbox confirmed message was not found or changed read state; refresh the selection");
+    }
+
+    const deletedIds = new Set(confirmedIds);
+    const remaining = messages.messages.filter((message) => !deletedIds.has(message.id));
+    const states = { ...readState.states };
+    for (const id of confirmedIds) delete states[id];
+
+    try {
+      // The lock covers validation and both replacements, not a two-file transaction.
+      await writePrivateJson(paths.messages, { version: CAPTAIN_INBOX_VERSION, messages: remaining });
+      await writePrivateJson(paths.readState, { version: CAPTAIN_INBOX_VERSION, states });
+    } catch (error) {
+      throw new Error("Captain's Inbox deletion outcome may be partial; refresh before making a new deletion request", { cause: error });
+    }
+    return { version: CAPTAIN_INBOX_VERSION, scope, ids: confirmedIds, deleted: confirmedIds.length };
+  });
 }
 
 export async function deleteCaptainInboxMessagesByReadState(paths, read) {
