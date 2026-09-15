@@ -20,6 +20,10 @@ const LOCK_RETRY_MS = 20;
 const LOCK_STALE_MS = 5 * 60 * 1000;
 const MESSAGE_ID_RE = /^ci_v1_[a-f0-9]{32}$/;
 
+function validMessageId(value) {
+  return typeof value === "string" && value.length === 38 && MESSAGE_ID_RE.test(value);
+}
+
 function asResolved(path) {
   return resolve(path);
 }
@@ -113,7 +117,7 @@ function validMessage(record) {
   return (
     record &&
     typeof record === "object" &&
-    MESSAGE_ID_RE.test(record.id) &&
+    validMessageId(record.id) &&
     validTimestamp(record.completed_at) &&
     typeof record.body === "string" &&
     record.source &&
@@ -127,7 +131,7 @@ function validMessage(record) {
 function validReadState(state) {
   if (!state || typeof state !== "object" || Array.isArray(state)) return false;
   return Object.entries(state).every(([id, value]) =>
-    MESSAGE_ID_RE.test(id) &&
+    validMessageId(id) &&
     value &&
     typeof value === "object" &&
     typeof value.read === "boolean" &&
@@ -438,7 +442,7 @@ export async function listCaptainInbox(paths) {
 }
 
 export async function markCaptainInboxMessage(paths, id, read) {
-  if (!MESSAGE_ID_RE.test(id) || typeof read !== "boolean") {
+  if (!validMessageId(id) || typeof read !== "boolean") {
     throw new Error("invalid Captain's Inbox mark request");
   }
   return withStoreLock(paths, { create: false }, async () => {
@@ -483,7 +487,7 @@ async function deleteCaptainInboxMessages(paths, select, result) {
 }
 
 export async function deleteCaptainInboxMessage(paths, id) {
-  if (!MESSAGE_ID_RE.test(id)) {
+  if (!validMessageId(id)) {
     throw new Error("invalid Captain's Inbox delete request");
   }
   return deleteCaptainInboxMessages(
@@ -507,7 +511,7 @@ export async function deleteCaptainInboxMessagesByIds(paths, scope, ids) {
       !Array.isArray(confirmedIds) ||
       confirmedIds.length < 1 ||
       confirmedIds.length > 100 ||
-      !confirmedIds.every((id) => typeof id === "string" && id.length === 38 && MESSAGE_ID_RE.test(id)) ||
+      !confirmedIds.every(validMessageId) ||
       new Set(confirmedIds).size !== confirmedIds.length
     ) {
       throw new Error("invalid Captain's Inbox delete-ids request");

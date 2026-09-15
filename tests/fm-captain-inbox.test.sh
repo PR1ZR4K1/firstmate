@@ -481,6 +481,7 @@ assert.deepEqual(
 // Confirmed deletion fixtures contain only generated IDs and synthetic bodies.
 const store = await import(new URL("./lib/fm-captain-inbox-store.mjs", pathToFileURL(extensionPath)));
 const fixtureId = (index) => `ci_v1_${index.toString(16).padStart(32, "0")}`;
+const trailingNewlineId = `${fixtureId(2)}\n`;
 const fixtureTime = "2026-08-01T00:00:00.000Z";
 const fixtureRecord = (index) => ({
   id: fixtureId(index), completed_at: fixtureTime, body: `synthetic deletion record ${index}`,
@@ -583,9 +584,19 @@ await expectCliFailure(disabled, ["delete-ids", "unread", fixtureId(1)], /disabl
 assert.equal(existsSync(storePaths(disabled).root), false);
 
 for (const document of ["messages", "readState"]) {
-  for (const content of ["not JSON\n", '{"version":2}\n', document === "messages"
-    ? `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), fixtureRecord(1)] })}\n`
-    : `${JSON.stringify({ version: 1, states: { [fixtureId(1)]: { read: "false", updated_at: fixtureTime } } })}\n`]) {
+  for (const content of [
+    "not JSON\n",
+    '{"version":2}\n',
+    document === "messages"
+      ? `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), fixtureRecord(1)] })}\n`
+      : `${JSON.stringify({ version: 1, states: { [fixtureId(1)]: { read: "false", updated_at: fixtureTime } } })}\n`,
+    document === "messages"
+      ? `${JSON.stringify({ version: 1, messages: [fixtureRecord(1), { ...fixtureRecord(2), id: trailingNewlineId }] })}\n`
+      : `${JSON.stringify({ version: 1, states: {
+        [fixtureId(1)]: { read: false, updated_at: fixtureTime },
+        [trailingNewlineId]: { read: false, updated_at: fixtureTime },
+      } })}\n`,
+  ]) {
     const malformedConfirmed = await seedConfirmedHome(`malformed-${document}-${Math.random()}`, [false]);
     await writeFile(storePaths(malformedConfirmed)[document], content);
     await rejectedWithoutWrites(malformedConfirmed, ["unread", fixtureId(1)], /malformed/);
